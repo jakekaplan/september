@@ -3,7 +3,7 @@
 [![CI](https://github.com/jakekaplan/september/actions/workflows/ci.yml/badge.svg)](https://github.com/jakekaplan/september/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-*Do you remember... the 21st night...*
+🎶 *Do you remember... the 21st night...* 🎶
 
 Long-term memory for AI agents. September keeps every message your agents
 exchange, compresses the history into a small view that fits in context, and
