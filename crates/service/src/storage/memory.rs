@@ -9,10 +9,7 @@ use crate::{
     Error,
     archive::{Message, Receipt, Source},
     error::Invariant,
-    jobs::{
-        Claim, Completion, Context, Input, Job, LEASE, MAX_CLAIMS, MAX_ELIGIBLE_LEAVES,
-        MAX_SUMMARY_BYTES,
-    },
+    jobs::{Claim, Claims, Completion, Context, Input, Job, LEASE, MAX_ELIGIBLE_LEAVES},
     snapshots::{Detail, Snapshot, Summary},
     storage::{Archive, Jobs},
 };
@@ -35,8 +32,7 @@ struct State {
     ready: VecDeque<Node>,
     unbuilt: BTreeSet<Node>,
     contexts: BTreeMap<Node, Context>,
-    claims: BTreeMap<Node, (Uuid, Instant)>,
-    expirations: BTreeSet<(Instant, Node)>,
+    claims: Claims,
     views: Views,
     snapshots: Snapshots,
 }
@@ -67,8 +63,7 @@ impl InMemory {
                 ready: VecDeque::new(),
                 unbuilt: BTreeSet::new(),
                 contexts: BTreeMap::new(),
-                claims: BTreeMap::new(),
-                expirations: BTreeSet::new(),
+                claims: Claims::default(),
                 views: Views::new(budget, Budget::COMPACTION),
                 snapshots: Snapshots::default(),
             }),
@@ -129,11 +124,7 @@ impl Archive for InMemory {
         })
     }
 
-    async fn prepare(&self, id: Uuid, within: Option<usize>) -> Result<Snapshot, Error> {
-        let within = within
-            .map(Budget::at_most)
-            .transpose()
-            .map_err(|_| Error::Invalid)?;
+    async fn prepare(&self, id: Uuid, within: Option<Budget>) -> Result<Snapshot, Error> {
         let mut state = self.state.lock().await;
         let cutoff = u64::try_from(state.messages.len())
             .map_err(|error| Error::internal("assign archive cutoff", error))?;
@@ -169,16 +160,9 @@ impl Jobs for InMemory {
     async fn claim(&self) -> Result<Option<Claim>, Error> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
-        // Only the expiry index is visited; never scan the archive for work.
-        while let Some(&(deadline, node)) = state.expirations.first() {
-            if deadline > now {
-                break;
-            }
-            state.expirations.pop_first();
-            state.claims.remove(&node);
-            state.ready.push_back(node);
-        }
-        if state.claims.len() >= MAX_CLAIMS {
+        let lapsed = state.claims.expire(now);
+        state.ready.extend(lapsed);
+        if state.claims.is_full() {
             return Ok(None);
         }
         let mut selected = None;
@@ -201,12 +185,9 @@ impl Jobs for InMemory {
                 message: state.message(node.start())?.clone(),
             }
         };
-        let token = Uuid::new_v4();
-        let deadline = now + LEASE;
         state.ready.remove(index);
         state.contexts.insert(node, context.clone());
-        state.claims.insert(node, (token, deadline));
-        state.expirations.insert((deadline, node));
+        let token = state.claims.grant(node, now);
         Ok(Some(Claim {
             job: Job {
                 range: node.into(),
@@ -220,20 +201,12 @@ impl Jobs for InMemory {
 
     async fn renew(&self, node: Node, token: Uuid) -> Result<(), Error> {
         let mut state = self.state.lock().await;
-        let now = Instant::now();
-        let deadline = state.live_claim(node, token, now)?;
-        state.expirations.remove(&(deadline, node));
-        let renewed = now + LEASE;
-        state.claims.insert(node, (token, renewed));
-        state.expirations.insert((renewed, node));
-        Ok(())
+        state.claims.renew(node, token, Instant::now())
     }
 
     async fn complete(&self, completion: Completion) -> Result<(), Error> {
+        completion.validate()?;
         let node = Node::try_from(completion.range)?;
-        if completion.text.trim().is_empty() || completion.text.len() > MAX_SUMMARY_BYTES {
-            return Err(Error::Invalid);
-        }
         let mut state = self.state.lock().await;
         if let Some(published) = state.summaries.get(&node) {
             return if *published.text == *completion.text
@@ -244,7 +217,7 @@ impl Jobs for InMemory {
                 Err(Error::ClaimLost)
             };
         }
-        state.live_claim(node, completion.token, Instant::now())?;
+        state.claims.check(node, completion.token, Instant::now())?;
         let summary = september_memory::Summary::new(node, completion.text);
         let prepared = state.prepare_publication(summary, Some(completion.token))?;
         state.publish(prepared);
@@ -253,14 +226,6 @@ impl Jobs for InMemory {
 }
 
 impl State {
-    fn live_claim(&self, node: Node, token: Uuid, now: Instant) -> Result<Instant, Error> {
-        let &(current, deadline) = self.claims.get(&node).ok_or(Error::ClaimLost)?;
-        if current != token || deadline <= now {
-            return Err(Error::ClaimLost);
-        }
-        Ok(deadline)
-    }
-
     fn message(&self, id: u64) -> Result<&Message, Error> {
         usize::try_from(id)
             .ok()
@@ -284,20 +249,7 @@ impl State {
         if let Some(context) = self.contexts.get(&node) {
             return Ok(Some(context.clone()));
         }
-        let prefix = self
-            .views
-            .context(node)
-            .map_err(|error| Error::internal("select job context", error))?;
-        prefix
-            .map(|prefix| {
-                Ok(Context {
-                    cutoff: prefix.cutoff(),
-                    view: prefix
-                        .render()
-                        .map_err(|error| Error::internal("render job context", error))?,
-                })
-            })
-            .transpose()
+        Context::select(&self.views, node)
     }
 
     fn prepare_publication(
@@ -343,9 +295,7 @@ impl State {
             {
                 self.ready.push_back(eligible);
             }
-            if let Some((_, deadline)) = self.claims.remove(&node) {
-                self.expirations.remove(&(deadline, node));
-            }
+            self.claims.release(node);
         }
         self.views = views;
         self.snapshots.make_ready(frozen);

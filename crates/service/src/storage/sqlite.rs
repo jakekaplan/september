@@ -5,19 +5,19 @@
 //! are leases held by running workers, so they live in memory; after a restart
 //! every unpublished job is claimable again, with its frozen context.
 
-use std::{cell::Cell, collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
+use std::{cell::Cell, fs, io, path::Path, sync::Arc, time::Duration};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use september_memory::{Budget, Node, Publication, View, Views, Zoom};
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::{sync::Mutex, time::Instant};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
     Error,
     archive::{Message, Receipt},
     error::Invariant,
-    jobs::MAX_ELIGIBLE_LEAVES,
+    jobs::{Claims, MAX_ELIGIBLE_LEAVES},
     snapshots::{Detail, Snapshot, Summary},
     storage::Archive,
 };
@@ -38,7 +38,21 @@ struct State {
     db: Connection,
     /// The live view's budget; the compaction view always uses [`Budget::COMPACTION`].
     budget: Budget,
-    claims: BTreeMap<Node, (Uuid, Instant)>,
+    claims: Claims,
+}
+
+/// Why the archive file could not be opened at startup.
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    /// Its folder could not be created.
+    #[error("could not create its folder: {0}")]
+    Folder(#[source] io::Error),
+    /// SQLite refused it, including when another server holds it.
+    #[error(transparent)]
+    Database(#[from] rusqlite::Error),
+    /// A newer server wrote it.
+    #[error("unknown schema version {0}")]
+    UnknownSchema(i64),
 }
 
 impl Sqlite {
@@ -46,12 +60,11 @@ impl Sqlite {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Internal`] if the file cannot be opened, another
-    /// connection holds it, or it has an unknown schema version.
-    pub fn open(path: &Path, budget: Budget) -> Result<Self, Error> {
+    /// Returns [`OpenError`] if the file cannot be opened, another connection
+    /// holds it, or it has an unknown schema version.
+    pub fn open(path: &Path, budget: Budget) -> Result<Self, OpenError> {
         if let Some(folder) = path.parent() {
-            fs::create_dir_all(folder)
-                .map_err(|error| Error::internal("create database folder", error))?;
+            fs::create_dir_all(folder).map_err(OpenError::Folder)?;
         }
         let mut db = Connection::open(path)?;
         // Fail at once if another server holds the file instead of waiting for it.
@@ -69,19 +82,14 @@ impl Sqlite {
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}
-            unknown => {
-                return Err(Error::internal(
-                    "open database",
-                    Invariant::UnknownSchema(unknown),
-                ));
-            }
+            unknown => return Err(OpenError::UnknownSchema(unknown)),
         }
         tx.commit()?;
         Ok(Self {
             state: Arc::new(Mutex::new(State {
                 db,
                 budget,
-                claims: BTreeMap::new(),
+                claims: Claims::default(),
             })),
         })
     }
@@ -108,19 +116,14 @@ impl Archive for Sqlite {
         self.run(move |state| state.ingest(&message)).await
     }
 
-    async fn prepare(&self, id: Uuid, within: Option<usize>) -> Result<Snapshot, Error> {
-        let budget = within
-            .map(Budget::at_most)
-            .transpose()
-            .map_err(|_| Error::Invalid)?;
-        self.run(move |state| state.prepare(id, within, budget))
-            .await
+    async fn prepare(&self, id: Uuid, within: Option<Budget>) -> Result<Snapshot, Error> {
+        self.run(move |state| state.prepare(id, within)).await
     }
 
     async fn snapshot(&self, id: Uuid) -> Result<Snapshot, Error> {
         self.run(move |state| {
             let (cutoff, frozen) = snapshots::saved(&state.db, id)?;
-            Ok(snapshots::wire(id, cutoff, frozen.as_ref()))
+            Ok(Snapshot::new(id, cutoff, frozen.as_ref()))
         })
         .await
     }
@@ -187,7 +190,8 @@ impl State {
         } else {
             tx.prepare_cached("INSERT INTO unbuilt (start) VALUES (?1)")?
                 .execute([id])?;
-            if first_unbuilt_after(&tx, MAX_ELIGIBLE_LEAVES)?.is_none() {
+            // Only the first eight unbuilt leaves are jobs.
+            if nth_unbuilt(&tx, MAX_ELIGIBLE_LEAVES)?.is_none() {
                 enqueue(&tx, node)?;
             }
             Vec::new()
@@ -202,8 +206,8 @@ impl State {
 
     /// Drop claims on published jobs, once the publication has committed.
     fn release(&mut self, published: &[Node]) {
-        for node in published {
-            self.claims.remove(node);
+        for &node in published {
+            self.claims.release(node);
         }
     }
 }
@@ -248,13 +252,13 @@ fn publish(
                 .prepare_cached("DELETE FROM unbuilt WHERE start = ?1")?
                 .execute([node.start()])?
                 > 0;
-        if was_unbuilt && let Some(start) = first_unbuilt_after(tx, MAX_ELIGIBLE_LEAVES - 1)? {
+        // Building a leaf lets the next unbuilt one become a job.
+        if was_unbuilt && let Some(start) = nth_unbuilt(tx, MAX_ELIGIBLE_LEAVES - 1)? {
             enqueue(tx, Node::new(start, 1)?)?;
         }
         published.push(node);
     }
-    save_view(tx, "live", views.live())?;
-    save_view(tx, "compaction", views.compaction())?;
+    save_views(tx, &views)?;
     snapshots::make_ready(tx, &frozen)?;
     if let Some(job) = publication.job() {
         enqueue(tx, job)?;
@@ -350,6 +354,11 @@ fn load_view(db: &Connection, name: &str, budget: Budget) -> Result<View, Error>
         .map_err(|error| Error::internal("restore view", error))
 }
 
+fn save_views(db: &Connection, views: &Views) -> Result<(), Error> {
+    save_view(db, "live", views.live())?;
+    save_view(db, "compaction", views.compaction())
+}
+
 fn save_view(db: &Connection, name: &str, view: &View) -> Result<(), Error> {
     let nodes: Vec<Node> = view
         .summaries()
@@ -373,11 +382,11 @@ fn next_id(db: &Connection) -> Result<u64, Error> {
     )
 }
 
-/// The unbuilt leaf with `skipped` earlier unbuilt leaves, if there is one.
-fn first_unbuilt_after(db: &Connection, skipped: usize) -> Result<Option<u64>, Error> {
+/// The unbuilt leaf with `index` earlier unbuilt leaves, if there is one.
+fn nth_unbuilt(db: &Connection, index: usize) -> Result<Option<u64>, Error> {
     Ok(db
         .prepare_cached("SELECT start FROM unbuilt ORDER BY start LIMIT 1 OFFSET ?1")?
-        .query_row([skipped], |row| row.get(0))
+        .query_row([index], |row| row.get(0))
         .optional()?)
 }
 

@@ -4,7 +4,10 @@ use std::sync::Arc;
 use september_memory::{Budget, Node, Snapshot as Frozen, View};
 use uuid::Uuid;
 
-use crate::{Error, snapshots::Snapshot};
+use crate::{
+    Error,
+    snapshots::{Snapshot, freeze},
+};
 
 const MAX_SNAPSHOTS: usize = 128;
 
@@ -39,7 +42,7 @@ impl Snapshots {
             return Err(Error::Capacity);
         }
         let frozen = if live.cutoff() == cutoff {
-            Some(freeze(live, within, built)?)
+            Some(freeze(live, cutoff, within, built)?)
         } else {
             self.waiting.entry(cutoff).or_default().push(id);
             None
@@ -57,18 +60,7 @@ impl Snapshots {
 
     pub(super) fn get(&self, id: Uuid) -> Result<Snapshot, Error> {
         let saved = self.saved.get(&id).ok_or(Error::NotFound)?;
-        Ok(match &saved.frozen {
-            None => Snapshot::Pending {
-                id,
-                cutoff: saved.cutoff,
-            },
-            Some(frozen) => Snapshot::Ready {
-                id,
-                cutoff: saved.cutoff,
-                nodes: frozen.nodes().iter().copied().map(Into::into).collect(),
-                view: frozen.render().to_owned(),
-            },
-        })
+        Ok(Snapshot::new(id, saved.cutoff, saved.frozen.as_ref()))
     }
 
     pub(super) fn frozen(&self, id: Uuid) -> Result<&Frozen, Error> {
@@ -94,9 +86,9 @@ impl Snapshots {
     ) -> Result<Vec<(Uuid, Frozen)>, Error> {
         let mut frozen = Vec::new();
         for view in reached {
-            for &id in self.waiting.get(&view.cutoff()).into_iter().flatten() {
-                let within = self.saved.get(&id).and_then(|saved| saved.within);
-                frozen.push((id, freeze(view, within, &built)?));
+            let waiting = self.waiting.get(&view.cutoff()).into_iter().flatten();
+            for (&id, saved) in waiting.filter_map(|id| Some((id, self.saved.get(id)?))) {
+                frozen.push((id, freeze(view, saved.cutoff, saved.within, &built)?));
             }
         }
         Ok(frozen)
@@ -111,17 +103,4 @@ impl Snapshots {
             }
         }
     }
-}
-
-fn freeze(
-    view: &View,
-    within: Option<Budget>,
-    built: impl Fn(Node) -> Option<Arc<str>>,
-) -> Result<Frozen, Error> {
-    let cutoff = view.cutoff();
-    match within {
-        None => view.freeze(cutoff),
-        Some(budget) => view.freeze_within(cutoff, budget, built),
-    }
-    .map_err(|error| Error::internal("freeze snapshot", error))
 }

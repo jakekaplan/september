@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
+use september_memory::Budget;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Semaphore;
@@ -115,9 +116,12 @@ async fn prepare<S: Archive>(
     Path(id): Path<Uuid>,
     Query(preparation): Query<Preparation>,
 ) -> Result<Response, Error> {
-    Ok(snapshot_response(
-        storage.prepare(id, preparation.within).await?,
-    ))
+    let within = preparation
+        .within
+        .map(Budget::at_most)
+        .transpose()
+        .map_err(|_| Error::Invalid)?;
+    Ok(snapshot_response(storage.prepare(id, within).await?))
 }
 
 async fn snapshot<S: Archive>(

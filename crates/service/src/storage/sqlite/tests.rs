@@ -32,6 +32,10 @@ fn folder() -> (TempDir, std::path::PathBuf) {
     (folder, path)
 }
 
+fn within(bytes: usize) -> Budget {
+    Budget::at_most(bytes).unwrap()
+}
+
 fn open(path: &Path) -> Sqlite {
     Sqlite::open(path, Budget::CHAT).unwrap()
 }
@@ -101,14 +105,13 @@ async fn a_sized_snapshot_merges_its_own_copy_through_built_parents() {
         let note = message(entry, format!("note {entry}"));
         storage.ingest(note).await.unwrap();
     }
-    let small = storage.prepare(Uuid::new_v4(), Some(80)).await.unwrap();
+    let small = storage
+        .prepare(Uuid::new_v4(), Some(within(80)))
+        .await
+        .unwrap();
     assert!(view(&small).starts_with("<chat>\n0+8|user: note 0 user: note 1"));
     let full = storage.prepare(Uuid::new_v4(), None).await.unwrap();
     assert_eq!(view(&full).lines().count(), 10);
-    assert!(matches!(
-        storage.prepare(Uuid::new_v4(), Some(5)).await,
-        Err(Error::Invalid)
-    ));
 }
 
 #[tokio::test]
@@ -149,7 +152,7 @@ async fn a_restart_keeps_the_archive_views_snapshots_and_job_contexts() {
     storage.ingest(message(1, "x".repeat(600))).await.unwrap();
     storage.ingest(message(2, "omega".into())).await.unwrap();
     let waiting = Uuid::new_v4();
-    storage.prepare(waiting, Some(1_000)).await.unwrap();
+    storage.prepare(waiting, Some(within(1_000))).await.unwrap();
     let before = storage.claim().await.unwrap().unwrap();
     let context = Context {
         cutoff: 1,
@@ -208,10 +211,9 @@ async fn a_restart_keeps_the_archive_views_snapshots_and_job_contexts() {
 async fn a_second_server_cannot_open_a_held_archive() {
     let (_folder, path) = folder();
     let storage = open(&path);
-    let Err(Error::Internal { source, .. }) = Sqlite::open(&path, Budget::CHAT) else {
+    let Err(OpenError::Database(cause)) = Sqlite::open(&path, Budget::CHAT) else {
         panic!("the archive is held");
     };
-    let cause = source.downcast_ref::<rusqlite::Error>().unwrap();
     assert_eq!(
         cause.sqlite_error_code(),
         Some(rusqlite::ErrorCode::DatabaseBusy)

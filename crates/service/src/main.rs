@@ -43,13 +43,10 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     match settings.storage {
         Storage::Memory => serve_with(Arc::new(InMemory::default()), settings).await,
         Storage::Sqlite => {
-            let storage = Sqlite::open(&settings.database, Budget::CHAT).map_err(|error| {
-                let cause = match &error {
-                    september::Error::Internal { source, .. } => source.to_string(),
-                    error => error.to_string(),
-                };
-                format!("could not open {}: {cause}", settings.database.display())
-            })?;
+            let database = settings.database.display();
+            let storage = Sqlite::open(&settings.database, Budget::CHAT)
+                .map_err(|error| format!("could not open {database}: {error}"))?;
+            tracing::info!(%database, "opened the SQLite archive");
             serve_with(Arc::new(storage), settings).await
         }
     }
@@ -81,9 +78,9 @@ async fn serve_with<S: Archive + Jobs>(
     let address = listener.local_addr()?;
     let shutdown = shutdown_signal()?;
     if durable {
-        tracing::info!(%address, database = %settings.database.display(), "September listening");
+        tracing::info!(%address, "September listening");
     } else {
-        tracing::info!(%address, storage = "memory", durability = "volatile", "September listening; restart clears all data");
+        tracing::info!(%address, durability = "volatile", "September listening; restart clears all data");
     }
     let (stop, mut stopped) = watch::channel(());
     let mut tasks: JoinSet<Result<(), Box<dyn Error + Send + Sync>>> = JoinSet::new();

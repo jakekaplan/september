@@ -5,22 +5,20 @@ use september_memory::{Budget, Node, Snapshot as Frozen, View};
 use uuid::Uuid;
 
 use super::{Lookup, State, cover, decode_nodes, encode_nodes, load_view, next_id};
-use crate::{Error, snapshots::Snapshot};
+use crate::{
+    Error,
+    snapshots::{Snapshot, freeze},
+};
 
 impl State {
     /// Freeze the live view for a new interaction if it covers the archive, else
     /// save the interaction to wait for it. A retried ID returns its snapshot.
-    pub(super) fn prepare(
-        &mut self,
-        id: Uuid,
-        within: Option<usize>,
-        budget: Option<Budget>,
-    ) -> Result<Snapshot, Error> {
+    pub(super) fn prepare(&mut self, id: Uuid, within: Option<Budget>) -> Result<Snapshot, Error> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         match saved(&tx, id) {
-            Ok((cutoff, frozen)) => return Ok(wire(id, cutoff, frozen.as_ref())),
+            Ok((cutoff, frozen)) => return Ok(Snapshot::new(id, cutoff, frozen.as_ref())),
             Err(Error::NotFound) => {}
             Err(error) => return Err(error),
         }
@@ -28,7 +26,7 @@ impl State {
         let live = load_view(&tx, "live", self.budget)?;
         let frozen = if live.cutoff() == cutoff {
             let lookup = Lookup::new(&tx);
-            let frozen = freeze(&live, budget, |node| lookup.text(node))?;
+            let frozen = freeze(&live, cutoff, within, |node| lookup.text(node))?;
             lookup.check()?;
             Some(frozen)
         } else {
@@ -41,9 +39,14 @@ impl State {
         tx.prepare_cached(
             "INSERT INTO snapshots (id, cutoff, within, nodes) VALUES (?1, ?2, ?3, ?4)",
         )?
-        .execute(params![id.to_string(), cutoff, within, nodes])?;
+        .execute(params![
+            id.to_string(),
+            cutoff,
+            within.map(Budget::target),
+            nodes
+        ])?;
         tx.commit()?;
-        Ok(wire(id, cutoff, frozen.as_ref()))
+        Ok(Snapshot::new(id, cutoff, frozen.as_ref()))
     }
 }
 
@@ -73,7 +76,7 @@ pub(super) fn freeze_waiting(
                 .map(Budget::at_most)
                 .transpose()
                 .map_err(|error| Error::internal("restore snapshot size", error))?;
-            frozen.push((id, freeze(view, within, built)?));
+            frozen.push((id, freeze(view, view.cutoff(), within, built)?));
         }
     }
     Ok(frozen)
@@ -102,29 +105,4 @@ pub(super) fn saved(db: &Connection, id: Uuid) -> Result<(u64, Option<Frozen>), 
         })
         .transpose()?;
     Ok((cutoff, frozen))
-}
-
-pub(super) fn wire(id: Uuid, cutoff: u64, frozen: Option<&Frozen>) -> Snapshot {
-    match frozen {
-        None => Snapshot::Pending { id, cutoff },
-        Some(frozen) => Snapshot::Ready {
-            id,
-            cutoff,
-            nodes: frozen.nodes().iter().copied().map(Into::into).collect(),
-            view: frozen.render().to_owned(),
-        },
-    }
-}
-
-fn freeze(
-    view: &View,
-    within: Option<Budget>,
-    built: impl Fn(Node) -> Option<Arc<str>>,
-) -> Result<Frozen, Error> {
-    let cutoff = view.cutoff();
-    match within {
-        None => view.freeze(cutoff),
-        Some(budget) => view.freeze_within(cutoff, budget, built),
-    }
-    .map_err(|error| Error::internal("freeze snapshot", error))
 }

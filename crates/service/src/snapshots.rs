@@ -1,6 +1,8 @@
 //! Frozen interaction views and authorized retrieval results.
 
-use september_memory::Node;
+use std::sync::Arc;
+
+use september_memory::{Budget, Node, Snapshot as Frozen, View};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -64,6 +66,36 @@ pub enum Snapshot {
         /// Exact model-visible memory text.
         view: String,
     },
+}
+
+impl Snapshot {
+    /// An interaction saved at `cutoff`: pending until its cover is frozen.
+    pub(crate) fn new(id: Uuid, cutoff: u64, frozen: Option<&Frozen>) -> Self {
+        match frozen {
+            None => Self::Pending { id, cutoff },
+            Some(frozen) => Self::Ready {
+                id,
+                cutoff,
+                nodes: frozen.nodes().iter().copied().map(Into::into).collect(),
+                view: frozen.render().to_owned(),
+            },
+        }
+    }
+}
+
+/// Freeze `view` for an interaction saved at `cutoff`, merged further through
+/// built parents when it asked for a view `within` a smaller size.
+pub(crate) fn freeze(
+    view: &View,
+    cutoff: u64,
+    within: Option<Budget>,
+    built: impl Fn(Node) -> Option<Arc<str>>,
+) -> Result<Frozen, Error> {
+    match within {
+        None => view.freeze(cutoff),
+        Some(budget) => view.freeze_within(cutoff, budget, built),
+    }
+    .map_err(|error| Error::internal("freeze snapshot", error))
 }
 
 /// A snapshot-authorized retrieval result.

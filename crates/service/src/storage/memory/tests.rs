@@ -4,7 +4,7 @@ use axum::{body::Body, http::Request};
 use september_memory::SUMMARY_BYTES;
 use tower::ServiceExt;
 
-use crate::archive::Kind;
+use crate::{archive::Kind, jobs::MAX_SUMMARY_BYTES};
 
 use super::*;
 
@@ -29,6 +29,10 @@ async fn with_job() -> Result<InMemory, Error> {
     let storage = InMemory::default();
     storage.ingest(message(0, "x".repeat(600))).await?;
     Ok(storage)
+}
+
+fn within(bytes: usize) -> Budget {
+    Budget::at_most(bytes).unwrap()
 }
 
 fn node(start: u64, length: u64) -> Node {
@@ -156,7 +160,10 @@ async fn eight_notes() -> InMemory {
 #[tokio::test]
 async fn a_sized_snapshot_merges_its_own_copy_and_leaves_the_live_view_alone() {
     let storage = eight_notes().await;
-    let small = storage.prepare(Uuid::new_v4(), Some(40)).await.unwrap();
+    let small = storage
+        .prepare(Uuid::new_v4(), Some(within(40)))
+        .await
+        .unwrap();
     assert_eq!(ranges(&small), [(0, 8)]);
     let full = storage.prepare(Uuid::new_v4(), None).await.unwrap();
     assert_eq!(ranges(&full).len(), 8);
@@ -168,7 +175,7 @@ async fn a_waiting_sized_snapshot_is_frozen_at_its_own_size() {
     storage.ingest(message(8, "y".repeat(600))).await.unwrap();
     let id = Uuid::new_v4();
     assert!(matches!(
-        storage.prepare(id, Some(60)).await.unwrap(),
+        storage.prepare(id, Some(within(60))).await.unwrap(),
         Snapshot::Pending { cutoff: 9, .. }
     ));
     let claim = storage.claim().await.unwrap().unwrap();

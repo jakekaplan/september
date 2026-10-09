@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use september_memory::Node;
+use september_memory::{Budget, Node};
 use uuid::Uuid;
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 mod memory;
 mod sqlite;
 pub use memory::InMemory;
-pub use sqlite::Sqlite;
+pub use sqlite::{OpenError, Sqlite};
 
 /// Messages, interaction snapshots, and zoom: what clients use.
 ///
@@ -34,13 +34,13 @@ pub trait Archive: Send + Sync + 'static {
     /// Freeze the current archive cutoff, returning an existing snapshot on retry.
     /// The caller generates one UUID per interaction before its first request.
     ///
-    /// `within` asks for a view of at most that many bytes, for a harness that
-    /// takes less context: the frozen copy is merged further through built
-    /// parents, and can stay larger while they are unbuilt.
+    /// `within` asks for a smaller view, for a harness that takes less context:
+    /// the frozen copy is merged further through built parents, and can stay
+    /// larger while they are unbuilt.
     fn prepare(
         &self,
         id: Uuid,
-        within: Option<usize>,
+        within: Option<Budget>,
     ) -> impl Future<Output = Result<Snapshot, Error>> + Send;
 
     /// Read the original cutoff's readiness and fixed view.
