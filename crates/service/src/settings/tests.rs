@@ -28,8 +28,6 @@ fn validates_startup_settings_without_echoing_values() {
         vec![("SUMMARIZER", "fake")],
         vec![("SUMMARIZER", "anthropic"), ("MODEL", " ")],
         vec![("BIND", "0.0.0.0:3000")],
-        vec![("STORAGE", "memory")],
-        vec![("API_KEY", "secret-invalid-provider")],
     ] {
         let result = Settings::read(None, environment(&values));
         assert!(result.is_err());
@@ -66,4 +64,33 @@ fn environment_overrides_toml_and_missing_explicit_file_fails() {
     assert_eq!(settings.queue, "redis://localhost:6379/0");
     assert_eq!(settings.bind.port(), 4000);
     assert!(Settings::read(Some(&path), environment(&[])).is_err());
+}
+
+#[test]
+fn unknown_september_variables_are_ignored_by_name_but_settings_are_kept() {
+    let (settings, ignored) = variables(
+        [
+            ("SEPTEMBER_MODEL", "from-env"),
+            ("SEPTEMBER_URL", "http://127.0.0.1:3000"),
+            ("SEPTEMBER_CONFIG", "/tmp/september.toml"),
+            ("PATH", "/usr/bin"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into())),
+    )
+    .unwrap();
+    assert_eq!(
+        settings,
+        HashMap::from([("SEPTEMBER_MODEL".to_owned(), "from-env".to_owned())])
+    );
+    assert_eq!(ignored, ["SEPTEMBER_URL"]);
+}
+
+#[test]
+fn the_settings_file_still_rejects_unknown_keys() {
+    let path = std::env::temp_dir().join(format!("september-{}.toml", uuid::Uuid::new_v4()));
+    fs::write(&path, "storage = 'memory'\n").unwrap();
+    let result = Settings::read(Some(&path), environment(&[]));
+    fs::remove_file(&path).unwrap();
+    assert!(result.is_err());
 }

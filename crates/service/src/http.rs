@@ -17,6 +17,7 @@ use crate::{
     Error,
     archive::{Message, Receipt},
     jobs::Completion,
+    mcp,
     snapshots::{Detail, Range, Snapshot},
     storage::{Archive, Jobs},
 };
@@ -43,6 +44,7 @@ pub fn router<S: Archive + Jobs>(storage: Arc<S>) -> Router {
         .route("/v1/snapshots/{id}/zoom", get(zoom::<S>))
         .route("/v1/jobs/claim", post(claim::<S>))
         .route("/v1/jobs/complete", post(complete::<S>))
+        .nest_service("/mcp", mcp::service(Arc::clone(&storage)))
         .layer(DefaultBodyLimit::max(512 * 1024))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             let permits = permits.clone();

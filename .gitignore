@@ -21,3 +21,6 @@ Thumbs.db
 
 # File-size checker cache
 .loq_cache
+
+# Python bytecode from adapter tests
+__pycache__/

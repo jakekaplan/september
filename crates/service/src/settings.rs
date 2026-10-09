@@ -1,6 +1,6 @@
 //! Startup settings. File values are overridden by SEPTEMBER_* environment values.
 
-use std::{env, net::SocketAddr, path::Path};
+use std::{collections::HashMap, env, ffi::OsString, net::SocketAddr, path::Path};
 
 use config::{Config, Environment, File};
 use september::summarizer::Provider;
@@ -33,22 +33,13 @@ pub(crate) struct Error(&'static str);
 impl Settings {
     pub(crate) fn load() -> Result<Self, Error> {
         let path = env::var_os("SEPTEMBER_CONFIG");
-        // Remove the file selector before deserializing the settings themselves.
-        let environment = env::vars_os()
-            .filter(|(key, _)| {
-                key.to_str()
-                    .is_some_and(|key| key.starts_with("SEPTEMBER_") && key != "SEPTEMBER_CONFIG")
-            })
-            .map(|(key, value)| {
-                Ok((
-                    key.into_string()
-                        .map_err(|_| Error("invalid settings variable name"))?,
-                    value
-                        .into_string()
-                        .map_err(|_| Error("settings variables must contain UTF-8"))?,
-                ))
-            })
-            .collect::<Result<_, Error>>()?;
+        let (environment, ignored) = variables(env::vars_os())?;
+        if !ignored.is_empty() {
+            tracing::warn!(
+                ?ignored,
+                "ignoring SEPTEMBER_* variables that are not server settings"
+            );
+        }
         Self::read(
             path.as_deref().map(Path::new),
             Environment::with_prefix("SEPTEMBER").source(Some(environment)),
@@ -85,6 +76,39 @@ impl Settings {
         }
         Ok(settings)
     }
+}
+
+/// The server settings among `SEPTEMBER_*` variables, and the names of the others.
+///
+/// Clients share the prefix (the Claude Code plugin reads `SEPTEMBER_URL`), so an
+/// unknown name is reported rather than fatal. The settings file stays strict.
+fn variables(
+    environment: impl Iterator<Item = (OsString, OsString)>,
+) -> Result<(HashMap<String, String>, Vec<String>), Error> {
+    const SETTINGS: [&str; 4] = [
+        "SEPTEMBER_BIND",
+        "SEPTEMBER_SUMMARIZER",
+        "SEPTEMBER_MODEL",
+        "SEPTEMBER_QUEUE",
+    ];
+    let mut settings = HashMap::new();
+    let mut ignored = Vec::new();
+    for (key, value) in environment {
+        let Some(key) = key.to_str() else { continue };
+        // SEPTEMBER_CONFIG selects the settings file; it is not a setting itself.
+        if !key.starts_with("SEPTEMBER_") || key == "SEPTEMBER_CONFIG" {
+            continue;
+        }
+        if !SETTINGS.contains(&key) {
+            ignored.push(key.to_owned());
+            continue;
+        }
+        let value = value
+            .into_string()
+            .map_err(|_| Error("settings variables must contain UTF-8"))?;
+        settings.insert(key.to_owned(), value);
+    }
+    Ok((settings, ignored))
 }
 
 /// A provider's standalone API key. Harness logins are never consulted.

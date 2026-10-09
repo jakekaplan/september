@@ -55,6 +55,22 @@ For a parent range, zoom returns `kind:"children"` and two immutable summary
 records. Only the frozen cover and its descendants are accessible. A new parent
 spanning several frozen lines remains forbidden, even if it completes later.
 
+## MCP retrieval
+
+`POST /mcp` is a stateless streamable-HTTP MCP endpoint behind the same loopback,
+origin, and concurrency limits. It offers the gist's two tools:
+
+- `zoom {snapshot, start, length}` returns the two child lines as
+  `id+n|summary`, or for `length:1` the original message under a
+  `[harness · session · project@branch]` line.
+- `date {snapshot, id}` returns the message's source time in UTC, such as
+  `2026-10-09T14:27:08Z`.
+
+`snapshot` is optional in the schema because the harness adapter fills it in,
+never the model. A missing or unknown snapshot, a range outside its frozen
+cover, an invalid range, or a pending snapshot is a tool error with a short
+reason the model can act on.
+
 ## Summary readiness and work
 
 A message that fits within 512 UTF-8 bytes as a `kind: text` line is its own

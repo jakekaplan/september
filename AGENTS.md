@@ -24,6 +24,7 @@ departs from the gist, say so in `docs/architecture.md`.
 ```text
 crates/memory/   september-memory: deterministic memory rules; no I/O
 crates/service/  september: service operations, persistence, transports, worker
+adapters/        harness plugins: translate harness events into the HTTP API
 ```
 
 - Tree ranges, view selection, byte budgets, and snapshot invariants belong in
@@ -32,8 +33,10 @@ crates/service/  september: service operations, persistence, transports, worker
   configuration, and process lifecycle belong in `september`.
 - The server binary and model worker live in the service crate. Keep entrypoints
   thin; do not create dummy executable stubs.
-- Harness adapters and a client CLI are clients of the service, not owners of
-  memory behavior. Do not add them or their dependencies ahead of a real task.
+- Harness adapters are clients of the service, not owners of memory behavior.
+  Each turns its harness's events into the one HTTP API and fills in the
+  interaction's snapshot for MCP retrieval; the server stays harness-neutral.
+  The Claude Code adapter is standard-library Python with `unittest` tests.
 - Start with modules. Add a crate only for a demonstrated dependency or ownership
   boundary, not to give every directory its own manifest.
 - Put logic with its domain. Avoid `utils`, `helpers`, and catch-all type modules.

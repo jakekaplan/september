@@ -1,0 +1,7 @@
+{
+  "name": "september",
+  "displayName": "September memory",
+  "version": "0.1.0",
+  "description": "Shared conversation memory from a September server: captures each session and loads its memory view, with zoom and date tools",
+  "author": { "name": "Jake Kaplan" }
+}

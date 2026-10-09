@@ -7,6 +7,7 @@ pub mod archive;
 mod error;
 mod http;
 pub mod jobs;
+mod mcp;
 mod server;
 pub mod snapshots;
 pub mod storage;

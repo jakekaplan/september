@@ -59,18 +59,32 @@ it. Embeddings and a vector database are not part of this design.
 
 The HTTP interface handles automatic harness integration: message ingestion,
 snapshot preparation, view retrieval, zoom, timestamps, and readiness reporting.
-An MCP endpoint exposes retrieval over the same service operations, not a second
-memory engine. A future CLI uses HTTP when a harness cannot use MCP.
+The MCP endpoint at `/mcp` exposes the gist's `zoom` and `date` tools over the
+same `Archive::zoom` operation, not a second memory engine. Each call names its
+snapshot, which the adapter fills in so the model never handles it and the view
+text stays unchanged. A future CLI uses HTTP when a harness cannot use MCP.
 
 Adapters own capturing finalized messages, flushing pending uploads, identifying
 interaction boundaries, constructing model context, and binding retrieval to a
 snapshot. A skill or an MCP connection alone cannot guarantee automatic capture
 or replace a harness's conversation history.
 
+Each harness gets an adapter in `adapters/` that translates its own events into
+the one HTTP API, so the server never learns about any particular harness:
+
+- **Claude Code** (`adapters/claude-code`, implemented): a plugin whose hooks run
+  one standard-library Python script. `SessionStart` freezes a snapshot and loads
+  the view, and runs again after `/clear` and compaction. Prompt, tool, and
+  `Stop` hooks upload messages. A `PreToolUse` hook stamps the session's snapshot
+  into `zoom` and `date` calls. Claude Code cannot remove earlier messages, so the
+  view is memory at session start rather than a per-turn replacement.
+- **Pi** (planned): its `context` hook can replace earlier messages with the view
+  on every request, the gist's full design.
+
 The service must distinguish a ready snapshot from one waiting on summaries.
 Uploads are acknowledged after durable storage; summary completion is separate.
 The initial text-only HTTP routes and schemas are defined in [http.md](http.md);
-MCP and hosted authentication are not implemented yet.
+hosted authentication is not implemented yet.
 
 ### Postgres
 

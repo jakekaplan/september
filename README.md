@@ -29,8 +29,12 @@ This README is the single statement of what is implemented.
 - **Worker**: opt-in Docket worker summarizing with OpenAI or Anthropic. Its
   queue is `SEPTEMBER_QUEUE`, in process by default; a `redis://` URL is
   accepted but untested.
-- **Not implemented**: persistent storage, authentication, MCP, a CLI, and
-  harness adapters. Live summary quality is unvalidated.
+- **Retrieval**: an MCP endpoint at `/mcp` with the gist's `zoom` and `date`
+  tools, each bound to the interaction's frozen snapshot.
+- **Claude Code plugin** (`adapters/claude-code`): captures each session and
+  loads the memory view at session start, after `/clear`, and after compaction.
+- **Not implemented**: persistent storage, authentication, a Pi adapter, and a
+  CLI. Live summary quality is unvalidated.
 
 ## Run locally
 
@@ -64,6 +68,27 @@ model = "gpt-6-luna"
 queue = "memory://september"
 ```
 
+## Use with Claude Code
+
+Install the plugin once from this repository, with the server running:
+
+```sh
+claude plugin marketplace add ./adapters
+claude plugin install september@september
+```
+
+Then start `claude` as usual. Hooks upload each prompt, tool call, tool result,
+and final reply, and load the memory view when a session starts, after `/clear`,
+and after compaction. Claude reaches older detail through the plugin's `zoom` and
+`date` tools; a hook fills in the session's snapshot, so the model never handles
+it. Set `SEPTEMBER_URL` if the server is not at `http://127.0.0.1:3000`.
+
+Claude Code cannot remove earlier messages, so within one long session its own
+history still grows until it compacts; each new session starts with everything
+from every harness. Uploads are best effort: if the server is down, those
+messages are not archived. Assistant text between tool calls and subagent work
+are not captured yet. Without a summarizer, long messages keep the view pending.
+
 ## How summaries are built
 
 A message that fits in 512 bytes as a tagged line, such as `user: ...`, is its
@@ -89,7 +114,8 @@ authoritative for readiness, fencing, and publication.
 
 ```text
 crates/memory/   september-memory: deterministic memory rules, no I/O
-crates/service/  september: HTTP server, storage, summarizer, Docket worker
+crates/service/  september: HTTP and MCP server, storage, summarizer, worker
+adapters/        harness plugins; claude-code is standard-library Python
 ```
 
 Install [rustup](https://rustup.rs/) and [uv](https://docs.astral.sh/uv/); the

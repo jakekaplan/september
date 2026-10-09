@@ -46,6 +46,9 @@ jobs:
       - name: Tests
         run: cargo test --locked --workspace
 
+      - name: Adapter tests
+        run: python3 -m unittest discover -s adapters/claude-code/hooks -p 'test_*.py'
+
       - name: Documentation
         run: cargo doc --locked --workspace --no-deps
         env:

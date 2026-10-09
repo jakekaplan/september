@@ -1,0 +1,14 @@
+{
+  "name": "september",
+  "description": "September's harness adapters, installable from this repository",
+  "owner": {
+    "name": "Jake Kaplan"
+  },
+  "plugins": [
+    {
+      "name": "september",
+      "source": "./claude-code",
+      "description": "Shared conversation memory from a September server"
+    }
+  ]
+}

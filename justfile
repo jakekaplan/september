@@ -44,5 +44,6 @@ hooks +paths:
 ci: fmt-check files
     cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     cargo test --locked --workspace
+    python3 -m unittest discover -s adapters/claude-code/hooks -p 'test_*.py'
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
     cargo deny --locked check

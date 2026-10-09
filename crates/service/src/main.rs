@@ -12,10 +12,11 @@ use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Docket logs every task run, including the dispatcher's polls; keep its failures.
+    // Docket logs every task run and rmcp every MCP request; keep their failures.
     let levels = Targets::new()
         .with_default(Level::INFO)
-        .with_target("docket", Level::WARN);
+        .with_target("docket", Level::WARN)
+        .with_target("rmcp", Level::WARN);
     tracing_subscriber::registry()
         .with(fmt::layer().with_target(false))
         .with(levels)
