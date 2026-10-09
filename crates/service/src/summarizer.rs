@@ -194,7 +194,9 @@ impl Summarizer {
     }
 }
 
-/// The gist's compaction task, with a ruler as long as the limit.
+/// The gist's compaction task, with a ruler as long as the limit. A message's
+/// task also names its project and branch, and repeats that the line covers
+/// only that message: models otherwise copy earlier messages from `<chat>`.
 fn task(job: &Job) -> Result<String, Error> {
     let ruler = "-".repeat(SUMMARY_BYTES);
     let node = Node::try_from(job.range)?;
@@ -202,11 +204,11 @@ fn task(job: &Job) -> Result<String, Error> {
         Input::Message { message } => format!(
             "Compaction: compress message {id} into one line of at most {SUMMARY_BYTES} bytes \
              (about 70 words), the length of this ruler:\n{ruler}\n\
-             It came from {harness} session {session}, project {project}, branch {branch}.\n\
+             It came from {harness}, project {project}, branch {branch}.\n\
+             Summarize only what message {id} itself says; use <chat> only to understand it.\n\
              <input>\n{text}\n</input>",
             id = node.start(),
             harness = message.source.harness,
-            session = message.source.session,
             project = message.project,
             branch = message.branch,
             text = message.tagged_text(),

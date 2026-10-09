@@ -133,7 +133,8 @@ summary call asks for xhigh reasoning effort; UniiChat runs Claude Haiku that wa
 Thinking makes each summary slower, so a summary task may run five minutes. A
 client's Codex or other harness login is never used. Summary quality has only
 been spot-checked: with Haiku 5.5, a reply's summary sometimes still borrows an
-earlier message from its context.
+earlier message from its context. Unlike the gist, a message's task names its
+project and branch and repeats that the line covers only that message.
 
 Hosted model calls need timeouts, bounded retries, and recorded usage. The local
 worker has timeouts and retries per claim, but no usage ledger or spend cap.

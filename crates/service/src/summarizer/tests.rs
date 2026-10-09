@@ -149,6 +149,8 @@ async fn both_providers_receive_provenance_and_context_and_return_only_final_tex
         let (uri, headers, body) = &state.requests[0];
         let encoded = body.to_string();
         assert!(encoded.contains("abandoned-experiment"));
+        assert!(encoded.contains("Summarize only what message 0 itself says"));
+        assert!(!encoded.contains("session-1"));
         assert!(encoded.contains("Earlier decision"));
         assert!(encoded.contains("untrusted"));
         assert!(body.get("tools").is_none());
