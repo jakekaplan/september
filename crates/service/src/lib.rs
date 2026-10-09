@@ -1,6 +1,6 @@
 //! September's HTTP service and atomic storage operations.
 //!
-//! The first backend is explicitly volatile and shared within one process.
+//! Storage is volatile in memory or durable in SQLite, shared within one process.
 //! Summary jobs are completed by external workers or an opt-in model worker.
 
 pub mod archive;
