@@ -154,6 +154,11 @@ oversized, so view accounting uses actual rendered byte lengths. Storage caps a
 summary at 1,024 bytes, and the summarizer cuts a longer draft at that ceiling.
 One node therefore never blocks every later snapshot.
 
+Summary calls use their own cheap model and system prompt, so unlike the gist's
+compactions they cannot share the chat's cache. They still share one with each
+other: the context comes first, with a cache mark after its last whole block of
+four lines.
+
 The gist's harness-side rules belong to adapters, not this service: a fresh
 model call per interaction, the view placed after fixed tools and instructions,
 prompt-cache marks on whole blocks of four lines, and the `zoom` and `date`

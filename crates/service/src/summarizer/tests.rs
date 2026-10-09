@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, fmt::Write, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -327,4 +327,62 @@ async fn provider_errors_do_not_expose_bodies_or_credentials() {
     assert!(!diagnostic.contains("secret conversation"));
     assert!(!diagnostic.contains("test-key"));
     assert!(diagnostic.contains("Provider"));
+}
+
+fn context_with(lines: u64) -> Context {
+    let lines = (0..lines).fold(String::new(), |mut view, id| {
+        let _ = writeln!(view, "{id}+1|line {id}");
+        view
+    });
+    Context {
+        cutoff: 0,
+        view: format!("<chat>\n{lines}</chat>"),
+    }
+}
+
+#[test]
+fn contexts_split_after_their_last_whole_block_of_four_lines() {
+    for lines in [0, 3] {
+        let view = context_with(lines).view;
+        assert_eq!(split_for_cache(&view), ("", view.as_str()));
+    }
+    let five = context_with(5).view;
+    let (cached, rest) = split_for_cache(&five);
+    assert_eq!(
+        cached,
+        "<chat>\n0+1|line 0\n1+1|line 1\n2+1|line 2\n3+1|line 3\n"
+    );
+    assert_eq!(rest, "4+1|line 4\n</chat>");
+    // A later, longer context starts with the same cached bytes.
+    assert!(context_with(7).view.starts_with(cached));
+    let eight = context_with(8).view;
+    assert_eq!(split_for_cache(&eight).1, "</chat>");
+}
+
+#[tokio::test]
+async fn anthropic_requests_mark_the_cached_context_and_openai_requests_do_not() {
+    for provider in [Provider::Openai, Provider::Anthropic] {
+        let server = server(provider, vec![(StatusCode::OK, response(provider, "line"))]).await;
+        let mut job = job(input());
+        job.context = context_with(5);
+        server.summarizer.summarize(&job).await.unwrap();
+        let state = server.state.lock().await;
+        let body = &state.requests[0].2;
+        match provider {
+            Provider::Anthropic => {
+                let first = &body["messages"][0]["content"][0];
+                assert_eq!(first["cache_control"]["type"], "ephemeral");
+                assert!(first["text"].as_str().unwrap().ends_with("3+1|line 3\n"));
+                let second = body["messages"][1].to_string();
+                assert!(second.contains("4+1|line 4"));
+                assert!(second.contains("Compaction: compress message 0"));
+            }
+            Provider::Openai => {
+                let encoded = body.to_string();
+                assert!(!encoded.contains("cache_control"));
+                assert!(encoded.contains("3+1|line 3"));
+                assert!(encoded.contains("Compaction: compress message 0"));
+            }
+        }
+    }
 }

@@ -71,7 +71,9 @@ own summary. Two children that fit in 512 bytes together are joined by a
 newline. Only the rest become jobs.
 
 The worker uses the gist's compaction call. The job's frozen `<chat>` context
-comes first. Then comes the task, with a 512-dash ruler showing the size. A
+comes first, with an Anthropic cache mark after its last whole block of four
+lines, so later jobs read that prefix from the cache. OpenAI caches prefixes
+automatically. Then comes the task, with a 512-dash ruler showing the size. A
 draft over the limit gets the gist's "Too long" reply, which shows where the
 limit cuts it. After five attempts the shortest draft is kept: the view measures
 real sizes. Storage accepts summaries up to 1,024 bytes, and the summarizer cuts
