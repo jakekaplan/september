@@ -15,13 +15,14 @@ use crate::{
 mod memory;
 pub use memory::InMemory;
 
-/// Operations are atomic across messages, jobs, views, and snapshots.
+/// Messages, interaction snapshots, and zoom: what clients use.
 ///
+/// Operations are atomic across messages, summaries, views, and snapshots.
 /// Backends must preserve immutable publications, source deduplication, ordered
-/// IDs, claim fencing, and frozen cutoffs. Durable backends must commit before
-/// acknowledging; volatile backends must advertise that limitation explicitly.
-/// Errors leave logical state unchanged. No lock may span external model work.
-pub trait Storage: Send + Sync + 'static {
+/// IDs, and frozen cutoffs. Durable backends must commit before acknowledging;
+/// volatile backends must advertise that limitation explicitly. Errors leave
+/// logical state unchanged.
+pub trait Archive: Send + Sync + 'static {
     /// Whether acknowledged state survives process restarts.
     fn is_durable(&self) -> bool;
 
@@ -37,19 +38,29 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Retrieve only content permitted by a ready snapshot's frozen cover.
     fn zoom(&self, id: Uuid, node: Node) -> impl Future<Output = Result<Detail, Error>> + Send;
+}
 
+/// Summary jobs: what workers use.
+///
+/// Claims are fenced by token and expire unless renewed; no lock may span
+/// external model work. Publication shares the archive's atomicity.
+pub trait Jobs: Send + Sync + 'static {
     /// Claim one ready job, recovering expired claims; at most eight are active.
     /// Leaves require fewer than eight earlier unbuilt leaves. Freeze historical
     /// context on first claim and retain it across expiry and retries.
     /// Defer jobs whose context exceeds 32,000 bytes while ready parents progress.
     fn claim(&self) -> impl Future<Output = Result<Option<Claim>, Error>> + Send;
 
-    /// Extend a live claim by another 60 seconds. Reject expired or replaced tokens.
-    /// A claim that is not renewed lapses, and its job becomes claimable again.
+    /// Extend a live claim by another lease. A claim that is not renewed lapses,
+    /// and its job becomes claimable again.
+    ///
+    /// Returns [`Error::ClaimLost`] for an expired or replaced token.
     fn renew(&self, node: Node, token: Uuid) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Publish once under a live claim, atomically with every parent whose two
     /// children now fit together verbatim; enqueue the first parent that does not.
     /// Retrying an identical successful completion is allowed.
+    ///
+    /// Returns [`Error::ClaimLost`] if the claim expired or was replaced.
     fn complete(&self, completion: Completion) -> impl Future<Output = Result<(), Error>> + Send;
 }

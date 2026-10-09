@@ -18,14 +18,15 @@ use crate::{
     archive::{Message, Receipt},
     jobs::Completion,
     snapshots::{Detail, Range, Snapshot},
-    storage::Storage,
+    storage::{Archive, Jobs},
 };
 
-/// Build the versioned HTTP interface around one shared storage backend.
+/// Build the versioned HTTP interface around one shared storage backend,
+/// serving clients through [`Archive`] and external workers through [`Jobs`].
 ///
 /// Includes bounded bodies, concurrency, request deadlines, and an explicit
 /// durability header. No authentication is implemented: serve on loopback only.
-pub fn router<S: Storage>(storage: Arc<S>) -> Router {
+pub fn router<S: Archive + Jobs>(storage: Arc<S>) -> Router {
     let durability = if storage.is_durable() {
         "durable"
     } else {
@@ -86,7 +87,7 @@ async fn bounded(request: Request, next: Next, permits: Arc<Semaphore>) -> Respo
     response
 }
 
-async fn ingest<S: Storage>(
+async fn ingest<S: Archive>(
     State(storage): State<Arc<S>>,
     Json(message): Json<Message>,
 ) -> Result<(StatusCode, Json<Receipt>), Error> {
@@ -99,14 +100,14 @@ async fn ingest<S: Storage>(
     Ok((status, Json(receipt)))
 }
 
-async fn prepare<S: Storage>(
+async fn prepare<S: Archive>(
     State(storage): State<Arc<S>>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, Error> {
     Ok(snapshot_response(storage.prepare(id).await?))
 }
 
-async fn snapshot<S: Storage>(
+async fn snapshot<S: Archive>(
     State(storage): State<Arc<S>>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, Error> {
@@ -122,7 +123,7 @@ fn snapshot_response(snapshot: Snapshot) -> Response {
     (status, Json(snapshot)).into_response()
 }
 
-async fn zoom<S: Storage>(
+async fn zoom<S: Archive>(
     State(storage): State<Arc<S>>,
     Path(id): Path<Uuid>,
     Query(range): Query<Range>,
@@ -130,14 +131,14 @@ async fn zoom<S: Storage>(
     Ok(Json(storage.zoom(id, range.try_into()?).await?))
 }
 
-async fn claim<S: Storage>(State(storage): State<Arc<S>>) -> Result<Response, Error> {
+async fn claim<S: Jobs>(State(storage): State<Arc<S>>) -> Result<Response, Error> {
     Ok(match storage.claim().await? {
         Some(claim) => Json(claim).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
 }
 
-async fn complete<S: Storage>(
+async fn complete<S: Jobs>(
     State(storage): State<Arc<S>>,
     Json(completion): Json<Completion>,
 ) -> Result<StatusCode, Error> {
@@ -150,6 +151,7 @@ impl IntoResponse for Error {
         let (status, code) = match &self {
             Self::Invalid => (StatusCode::BAD_REQUEST, "invalid_request"),
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
+            Self::ClaimLost => (StatusCode::CONFLICT, "claim_lost"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::NotReady => (StatusCode::CONFLICT, "not_ready"),
             Self::OutsideSnapshot => (StatusCode::FORBIDDEN, "outside_snapshot"),

@@ -6,9 +6,12 @@ pub enum Error {
     /// The request violates a size, identity, or range constraint.
     #[error("invalid request")]
     Invalid,
-    /// A source identity or claim conflicts with existing state.
-    #[error("identity or claim conflict")]
+    /// A source identity was reused with different content.
+    #[error("source identity conflict")]
     Conflict,
+    /// A summary claim expired or passed to another worker.
+    #[error("summary claim lost")]
+    ClaimLost,
     /// The requested snapshot does not exist in this archive instance.
     #[error("snapshot not found")]
     NotFound,

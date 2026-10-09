@@ -1,5 +1,10 @@
 //! Continuous worker behavior across Docket, storage, and frozen snapshots.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "test failures should identify broken invariants"
+)]
+
 use std::{
     error::Error as StdError,
     sync::{
@@ -9,12 +14,13 @@ use std::{
     time::Duration,
 };
 
+use docket::Docket;
 use september::{
     Error,
-    archive::{Kind, Message, Receipt, Source},
+    archive::{Kind, Message, Source},
     jobs::{Claim, Completion, Job, MAX_SUMMARY_BYTES},
     snapshots::{Detail, Snapshot},
-    storage::{InMemory, Storage},
+    storage::{Archive, InMemory, Jobs},
     worker::Worker,
 };
 use september_memory::{Budget, Node};
@@ -44,6 +50,13 @@ fn message(entry: usize) -> Message {
 
 /// A deterministic stand-in for a model. Its summaries are short enough that
 /// every pair of them joins verbatim.
+/// A private in-process Docket queue for one test.
+async fn queue() -> Docket {
+    Docket::connect("september", format!("memory://{}", Uuid::new_v4()))
+        .await
+        .unwrap()
+}
+
 async fn summarize(job: Job) -> Result<String, Error> {
     tokio::task::yield_now().await;
     Ok(format!(
@@ -53,7 +66,7 @@ async fn summarize(job: Job) -> Result<String, Error> {
 }
 
 async fn ready(
-    storage: &impl Storage,
+    storage: &impl Archive,
     id: Uuid,
 ) -> Result<Snapshot, Box<dyn StdError + Send + Sync>> {
     Ok(timeout(Duration::from_secs(5), async {
@@ -68,7 +81,7 @@ async fn ready(
     .await??)
 }
 
-// Observe successful claim transitions so virtual-time checks need no polling guesses.
+// Observe the worker's claims and renewals so virtual-time checks need no polling.
 struct Observed {
     inner: InMemory,
     token: watch::Sender<Option<Uuid>>,
@@ -85,22 +98,7 @@ impl Default for Observed {
     }
 }
 
-impl Storage for Observed {
-    fn is_durable(&self) -> bool {
-        false
-    }
-    async fn ingest(&self, message: Message) -> Result<Receipt, Error> {
-        self.inner.ingest(message).await
-    }
-    async fn prepare(&self, id: Uuid) -> Result<Snapshot, Error> {
-        self.inner.prepare(id).await
-    }
-    async fn snapshot(&self, id: Uuid) -> Result<Snapshot, Error> {
-        self.inner.snapshot(id).await
-    }
-    async fn zoom(&self, id: Uuid, node: Node) -> Result<Detail, Error> {
-        self.inner.zoom(id, node).await
-    }
+impl Jobs for Observed {
     async fn claim(&self) -> Result<Option<Claim>, Error> {
         let claim = self.inner.claim().await?;
         if let Some(claim) = &claim {
@@ -123,7 +121,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
     let storage = Arc::new(InMemory::new(Budget::new(80, 160).unwrap()));
     let (calls, mut called) = watch::channel(0);
     let gate = Arc::new(Semaphore::new(0));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let gate = Arc::clone(&gate);
         move |job: Job| {
             let gate = Arc::clone(&gate);
@@ -135,9 +133,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
                 summary
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -194,7 +190,7 @@ async fn eight_jobs_drain_on_shutdown_without_claiming_more_work() {
     }
     let (calls, mut called) = watch::channel(0);
     let gate = Arc::new(Semaphore::new(0));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let gate = Arc::clone(&gate);
         move |job: Job| {
             let gate = Arc::clone(&gate);
@@ -205,9 +201,7 @@ async fn eight_jobs_drain_on_shutdown_without_claiming_more_work() {
                 summarize(job).await
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -237,7 +231,7 @@ async fn transient_failure_retries_and_completes() {
     let id = Uuid::new_v4();
     storage.prepare(id).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let calls = Arc::clone(&calls);
         move |job: Job| {
             let calls = Arc::clone(&calls);
@@ -248,9 +242,7 @@ async fn transient_failure_retries_and_completes() {
                 summarize(job).await
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -265,12 +257,12 @@ async fn transient_failure_retries_and_completes() {
 async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
     let storage = Arc::new(Observed::default());
     let mut renewed = storage.renewals.subscribe();
-    storage.ingest(message(0)).await.unwrap();
+    storage.inner.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
-    storage.prepare(id).await.unwrap();
+    storage.inner.prepare(id).await.unwrap();
     let started = Arc::new(Notify::new());
     let gate = Arc::new(Semaphore::new(0));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let started = Arc::clone(&started);
         let gate = Arc::clone(&gate);
         move |job: Job| {
@@ -282,9 +274,7 @@ async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
                 summarize(job).await
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -306,7 +296,7 @@ async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
     assert!(storage.claim().await.unwrap().is_none());
     resume();
     gate.add_permits(1);
-    ready(storage.as_ref(), id).await.unwrap();
+    ready(&storage.inner, id).await.unwrap();
     stop.send(()).unwrap();
     running.await.unwrap().unwrap();
 }
@@ -318,12 +308,10 @@ async fn rejected_results_retry_then_their_claim_lapses_for_another_worker() {
     let id = Uuid::new_v4();
     storage.prepare(id).await.unwrap();
     let (calls, mut called) = watch::channel(0);
-    let worker = Worker::memory(Arc::clone(&storage), move |_| {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), move |_| {
         calls.send_modify(|count| *count += 1);
         std::future::ready(Ok("x".repeat(MAX_SUMMARY_BYTES + 1)))
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -352,10 +340,10 @@ async fn rejected_results_retry_then_their_claim_lapses_for_another_worker() {
 #[tokio::test]
 async fn shutdown_deadline_cancels_the_model_and_its_claim_lapses() {
     let storage = Arc::new(Observed::default());
-    storage.ingest(message(0)).await.unwrap();
+    storage.inner.ingest(message(0)).await.unwrap();
     let started = Arc::new(Notify::new());
     let held = Arc::new(Semaphore::new(1));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let started = Arc::clone(&started);
         let held = Arc::clone(&held);
         move |_| {
@@ -367,9 +355,7 @@ async fn shutdown_deadline_cancels_the_model_and_its_claim_lapses() {
                 std::future::pending::<Result<String, Error>>().await
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;
@@ -399,7 +385,7 @@ async fn shutdown_deadline_cancels_the_model_and_its_claim_lapses() {
                 text: "late".into()
             })
             .await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     storage
         .complete(Completion {
@@ -417,7 +403,7 @@ async fn aborting_the_worker_cancels_children_and_recovers_by_expiry() {
     storage.ingest(message(0)).await.unwrap();
     let started = Arc::new(Notify::new());
     let held = Arc::new(Semaphore::new(1));
-    let worker = Worker::memory(Arc::clone(&storage), {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let started = Arc::clone(&started);
         let held = Arc::clone(&held);
         move |_| {
@@ -429,9 +415,7 @@ async fn aborting_the_worker_cancels_children_and_recovers_by_expiry() {
                 std::future::pending::<Result<String, Error>>().await
             }
         }
-    })
-    .await
-    .unwrap();
+    });
     let running = tokio::spawn(worker.run(std::future::pending()));
     timeout(Duration::from_secs(5), started.notified())
         .await

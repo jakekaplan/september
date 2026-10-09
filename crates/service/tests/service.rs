@@ -18,7 +18,7 @@ use september::{
     jobs::{Claim, Completion, Input},
     router,
     snapshots::{Detail, Snapshot},
-    storage::{InMemory, Storage},
+    storage::{Archive, InMemory, Jobs},
 };
 use september_memory::{Budget, Node};
 use serde_json::{Value, json};
@@ -53,7 +53,7 @@ fn view(snapshot: Snapshot) -> (u64, String) {
     }
 }
 
-async fn publish(storage: &impl Storage, claim: &Claim, text: &str) -> Result<(), Error> {
+async fn publish(storage: &impl Jobs, claim: &Claim, text: &str) -> Result<(), Error> {
     storage
         .complete(Completion {
             range: claim.job.range,
@@ -220,19 +220,19 @@ async fn expired_claims_are_recovered_and_stale_workers_cannot_publish() {
     tokio::time::advance(Duration::from_secs(60)).await;
     assert!(matches!(
         publish(&storage, &old, "stale").await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     let new = storage.claim().await.unwrap().unwrap();
     assert_ne!(old.token, new.token);
     assert!(matches!(
         publish(&storage, &old, "stale").await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     publish(&storage, &new, "complete").await.unwrap();
     publish(&storage, &new, "complete").await.unwrap(); // response-loss retry
     assert!(matches!(
         publish(&storage, &new, "rewrite").await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     assert!(storage.claim().await.unwrap().is_none());
 }

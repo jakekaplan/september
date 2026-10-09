@@ -21,6 +21,8 @@ pub(crate) struct Settings {
     pub bind: SocketAddr,
     pub summarizer: Summarizer,
     pub model: Option<String>,
+    /// Docket's queue: `memory://` in process, or a Redis URL.
+    pub queue: String,
 }
 
 /// A startup failure. Messages are fixed so that setting values are never echoed.
@@ -57,6 +59,7 @@ impl Settings {
         let mut builder = Config::builder()
             .set_default("bind", "127.0.0.1:3000")
             .and_then(|builder| builder.set_default("summarizer", "none"))
+            .and_then(|builder| builder.set_default("queue", "memory://september"))
             .map_err(|_| Error("could not initialize settings"))?;
         if let Some(path) = path {
             builder = builder.add_source(File::from(path).format(config::FileFormat::Toml));

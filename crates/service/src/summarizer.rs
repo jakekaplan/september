@@ -8,12 +8,12 @@ use genai::{
     chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, StopReason},
     resolver::{AuthData, Endpoint},
 };
-use september_memory::{Node, Summary};
+use september_memory::{Node, SUMMARY_BYTES, Summary};
 use serde::Deserialize;
 
 use crate::{
     Error,
-    jobs::{Input, Job, MAX_SUMMARY_BYTES, SUMMARY_BYTES},
+    jobs::{Input, Job, MAX_SUMMARY_BYTES},
 };
 
 const ATTEMPTS: usize = 5;

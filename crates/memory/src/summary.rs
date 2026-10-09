@@ -3,12 +3,15 @@ use std::sync::Arc;
 
 use crate::{Error, Node};
 
+/// The size a summary aims for, in UTF-8 bytes: the gist's 512-byte line.
+pub const SUMMARY_BYTES: usize = 512;
+
 /// An immutable completed summary with its permanent node identity.
 ///
 /// Callers supply published records from the archive. This value does not prove
 /// child readiness or enforce archive-wide uniqueness: those checks belong to
 /// publication in the service. Loading a summary never loads its descendants.
-/// Text can contain newlines and exceed the summarizer's 512-byte target.
+/// Text can contain newlines and exceed [`SUMMARY_BYTES`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Summary {
     node: Node,
@@ -35,6 +38,12 @@ impl Summary {
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The completed text, shared without copying.
+    #[must_use]
+    pub fn shared_text(&self) -> Arc<str> {
+        Arc::clone(&self.text)
     }
 
     pub(crate) fn rendered_bytes(&self) -> Result<usize, Error> {

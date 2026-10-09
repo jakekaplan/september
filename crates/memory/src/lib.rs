@@ -3,6 +3,8 @@
 //! Callers supply immutable completed [`Summary`] records. A [`View`] owns only
 //! its current cover, with batched UTF-8 byte budgets and saved shrinking state.
 //! Restoring a coarse summary does not require loading its descendants.
+//! [`Views`] keeps the live view and the compaction view that follows it, and
+//! [`Publication`] decides which parents a new summary completes verbatim.
 //!
 //! A frozen [`Snapshot`] can zoom only into its cover nodes and their descendants.
 //! [`Zoom`] selects child ranges or an original-message ID; content lookup belongs
@@ -27,12 +29,16 @@
 
 mod error;
 mod node;
+mod publication;
 mod snapshot;
 mod summary;
 mod view;
+mod views;
 
 pub use error::Error;
 pub use node::Node;
+pub use publication::Publication;
 pub use snapshot::{Snapshot, Zoom};
-pub use summary::Summary;
+pub use summary::{SUMMARY_BYTES, Summary};
 pub use view::{Budget, View};
+pub use views::Views;

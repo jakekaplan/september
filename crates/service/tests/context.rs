@@ -11,13 +11,14 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
+use docket::Docket;
 use september::{
     Error,
     archive::{Kind, Message, Source},
     jobs::{Claim, Completion, Job},
     router,
     snapshots::Snapshot,
-    storage::{InMemory, Storage},
+    storage::{Archive, InMemory, Jobs},
     worker::Worker,
 };
 use september_memory::Budget;
@@ -44,6 +45,13 @@ fn message(entry: usize, text: &str) -> Message {
 
 /// A deterministic stand-in for a model. Its summaries are short enough that
 /// every pair of them joins verbatim.
+/// A private in-process Docket queue for one test.
+async fn queue() -> Docket {
+    Docket::connect("september", format!("memory://{}", Uuid::new_v4()))
+        .await
+        .unwrap()
+}
+
 async fn summarize(job: Job) -> Result<String, Error> {
     tokio::task::yield_now().await;
     Ok(format!(
@@ -270,15 +278,13 @@ async fn continuous_worker_receives_the_claims_historical_context() {
         .await
         .unwrap();
     let (contexts, mut received) = mpsc::channel(8);
-    let worker = Worker::memory(Arc::clone(&storage), move |job: Job| {
+    let worker = Worker::new(queue().await, Arc::clone(&storage), move |job: Job| {
         let contexts = contexts.clone();
         async move {
             contexts.send(job.context.clone()).await.unwrap();
             summarize(job).await
         }
-    })
-    .await
-    .unwrap();
+    });
     let (stop, stopped) = oneshot::channel();
     let running = tokio::spawn(worker.run(async {
         let _ = stopped.await;

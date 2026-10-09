@@ -4,6 +4,7 @@ mod settings;
 
 use std::{error::Error, process::ExitCode, sync::Arc};
 
+use docket::Docket;
 use september::{router, serve, storage::InMemory, summarizer::Summarizer, worker::Worker};
 use tokio::{net::TcpListener, signal, sync::watch, task::JoinSet};
 use tracing::Level;
@@ -37,13 +38,14 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             let api_key = settings::api_key(provider)?;
             let model = settings.model.ok_or("model setting missing")?;
             let summarizer = Summarizer::new(provider, model, api_key)?;
-            Some(
-                Worker::memory(Arc::clone(&storage), move |job| {
-                    let summarizer = summarizer.clone();
-                    async move { summarizer.summarize(&job).await }
-                })
-                .await?,
-            )
+            // Queue URLs can hold credentials, so the error never includes it.
+            let docket = Docket::connect("september", settings.queue.as_str())
+                .await
+                .map_err(|_| "could not connect to the SEPTEMBER_QUEUE summary queue")?;
+            Some(Worker::new(docket, Arc::clone(&storage), move |job| {
+                let summarizer = summarizer.clone();
+                async move { summarizer.summarize(&job).await }
+            }))
         }
     };
     let app = router(storage);

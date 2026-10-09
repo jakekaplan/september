@@ -113,13 +113,15 @@ illustrative. Aim for at most 512 UTF-8 bytes. Up to 1,024 are accepted,
 because the view measures real sizes. Longer output returns 400 and leaves the
 live claim usable. Successful publication returns 204.
 The identical successful completion can be retried. Conflicting output, expired
-claims, and replaced tokens return 409. Completed summaries cannot be overwritten.
+claims, and replaced tokens return 409 with `error:"claim_lost"`; reused source
+identities return 409 with `error:"conflict"`. Completed summaries cannot be
+overwritten.
 
 There are at most eight simultaneous claims. Expired claims are requeued on the
 next claim request, using an expiry index rather than scanning the archive.
 External workers currently have no lease-renewal HTTP endpoint and must complete
-within 60 seconds or abandon that attempt. The in-process continuous worker uses
-`Storage::renew` every 20 seconds. Neither path holds a transaction over external
+within 60 seconds or abandon that attempt. The in-process worker renews three
+times per lease, every 20 seconds for the 60-second lease. Neither path holds a transaction over external
 work. OpenAI and Anthropic access is available through the opt-in in-process
 worker; provider spend policy and live summary-quality validation remain future work.
 
@@ -159,15 +161,20 @@ budget the rendered view plus instructions, active tool work, and output room.
 
 ## Backend boundary
 
-`Storage` exposes ingestion, snapshot preparation/read, zoom, claim, renewal,
-and completion. HTTP handlers depend only on that contract. Renewal is an
-in-process operation used by the worker. The memory backend
-serializes state changes with a process-local mutex, prepares fallible view
-changes before commit, retains the live and compaction views, and freezes waiting snapshots as
-their exact cutoffs become covered. Ready snapshots are never rebuilt.
-Ingestion and completion share one prepared publication, which also joins any
-parents that now fit verbatim; the worker's completion token is stored with its
-summary.
+Storage has two contracts. Clients use `Archive`: ingestion, snapshot
+preparation and reads, and zoom. Workers use `Jobs`: claim, renewal, and
+completion. HTTP handlers depend only on those traits, and renewal is used only
+by the in-process worker.
+
+Memory rules live in `september-memory`, not in a backend.
+- `Publication` decides which parents a new summary completes verbatim.
+- `Views` advances the live and compaction views and selects job context.
+
+A backend loads what those need, applies their result atomically, and stores it.
+The memory backend serializes state changes with a process-local mutex,
+prepares every fallible change before committing, and freezes waiting snapshots
+as their exact cutoffs become covered. Ready snapshots are never rebuilt. The
+worker's completion token is stored with its summary.
 Internal failures retain their typed cause and operation for server diagnostics,
 while HTTP 500 responses expose only `{"error":"internal"}`.
 

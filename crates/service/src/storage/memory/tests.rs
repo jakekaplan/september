@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use september_memory::SUMMARY_BYTES;
+
 use crate::archive::Kind;
 
 use super::*;
@@ -49,13 +53,13 @@ async fn renewal_moves_expiry_and_never_revives_a_replaced_claim() {
     tokio::time::advance(Duration::from_secs(39)).await;
     assert!(matches!(
         storage.renew(node, claim.token).await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     let replacement = storage.claim().await.unwrap().unwrap();
     assert_ne!(replacement.token, claim.token);
     assert!(matches!(
         storage.renew(node, claim.token).await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
     storage
         .complete(Completion {
@@ -67,7 +71,7 @@ async fn renewal_moves_expiry_and_never_revives_a_replaced_claim() {
         .unwrap();
     assert!(matches!(
         storage.renew(node, replacement.token).await,
-        Err(Error::Conflict)
+        Err(Error::ClaimLost)
     ));
 }
 

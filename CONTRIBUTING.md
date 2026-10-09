@@ -28,7 +28,7 @@ Use `-p september` for service changes. Choose the narrowest relevant test;
 run the affected package's tests when a filter is not useful. Workspace tests
 belong in CI unless explicitly requested locally. The memory crate has unit,
 cross-module interaction, and documentation tests using completed summaries
-and read-only ready-parent maps. `cargo test --locked -p september-memory` runs
+and built-parent lookups. `cargo test --locked -p september-memory` runs
 this affected package's tests; these establish cover and navigation invariants,
 not archive publication guarantees, service behavior, or summary quality.
 `cargo test --locked -p september` covers concurrent ingestion, retry conflicts,

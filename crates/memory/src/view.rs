@@ -123,6 +123,12 @@ impl View {
             .map_or(0, |summary| summary.node().end())
     }
 
+    /// The byte limits this view batches within.
+    #[must_use]
+    pub const fn budget(&self) -> Budget {
+        self.budget
+    }
+
     /// Whether a triggered batch still needs to reach its byte target.
     #[must_use]
     pub const fn is_shrinking(&self) -> bool {

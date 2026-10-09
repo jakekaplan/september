@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, jobs::SUMMARY_BYTES};
+use september_memory::SUMMARY_BYTES;
+
+use crate::Error;
 
 /// Stable adapter identity used to deduplicate uploads.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

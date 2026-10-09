@@ -15,20 +15,22 @@ down to the original message.
 
 This README is the single statement of what is implemented.
 
-- **Memory core** (`september-memory`): aligned ranges, batched views with the
-  gist's merge order and 64–128 KB sawtooth, saved-view restoration, and frozen
-  snapshots that zoom only into their own cover.
+- **Memory core** (`september-memory`): every rule that doesn't depend on
+  storage. That covers aligned ranges, batched views with the gist's merge
+  order and 64–128 KB sawtooth, the 16–32 KB compaction view that follows the
+  live view, job context, joining short pairs verbatim, saved-view restoration,
+  and frozen snapshots that zoom only into their own cover.
 - **Local service** (`september`): deduplicated ingestion, fixed-cutoff
-  snapshots, zoom to originals, fenced summary claims, and a retained 16–32 KB
-  compaction view for worker context, all behind an interchangeable `Storage`
-  contract. Short messages and short pairs of summaries publish verbatim, with
-  no model call.
+  snapshots, zoom to originals, and fenced summary claims. Clients use the
+  `Archive` trait and workers use the `Jobs` trait, so a backend only stores
+  state and calls the core.
 - **Storage**: in memory only. Acknowledgments are volatile; restarting loses
   all data.
-- **Worker**: opt-in Docket worker on an in-process `memory://` queue,
-  summarizing with OpenAI or Anthropic.
-- **Not implemented**: persistent storage, Redis-backed Docket, authentication,
-  MCP, a CLI, and harness adapters. Live summary quality is unvalidated.
+- **Worker**: opt-in Docket worker summarizing with OpenAI or Anthropic. Its
+  queue is `SEPTEMBER_QUEUE`, in process by default; a `redis://` URL is
+  accepted but untested.
+- **Not implemented**: persistent storage, authentication, MCP, a CLI, and
+  harness adapters. Live summary quality is unvalidated.
 
 ## Run locally
 
@@ -59,6 +61,7 @@ used, and `.env` files are not loaded.
 bind = "127.0.0.1:3000"
 summarizer = "openai"
 model = "gpt-6-luna"
+queue = "memory://september"
 ```
 
 ## How summaries are built

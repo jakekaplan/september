@@ -2,7 +2,8 @@
 //!
 //! September storage stays authoritative for readiness, claims, and publication.
 //! Docket runs the background work: a perpetual dispatch task claims ready jobs
-//! and adds one summary task per claim, with Docket's retries and timeouts.
+//! and adds one summary task per claim, with Docket's retries and timeouts. The
+//! caller chooses the Docket queue, in memory or on Redis.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -13,16 +14,15 @@ use tokio::{
     sync::oneshot,
     time::{Instant, MissedTickBehavior, interval_at, timeout},
 };
-use uuid::Uuid;
 
 use crate::{
     Error,
     jobs::{Claim, Completion, Job, MAX_CLAIMS},
-    storage::Storage,
+    storage::Jobs,
 };
 
 const DISPATCH_EVERY: Duration = Duration::from_millis(250);
-const RENEW_EVERY: Duration = Duration::from_secs(20);
+const RENEWALS_PER_LEASE: u32 = 3;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
@@ -45,21 +45,15 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Create a volatile Docket queue and register the supplied summarizer.
+    /// Register the dispatch and summary tasks on `docket`.
     /// The callback receives a job's source data and frozen historical context.
     /// Both are untrusted data, never instructions to execute.
-    ///
-    /// # Errors
-    /// Returns a service error if Docket cannot initialize its memory backend.
-    pub async fn memory<S, F, Fut>(storage: Arc<S>, summarize: F) -> Result<Self, Error>
+    pub fn new<S, F, Fut>(docket: Docket, storage: Arc<S>, summarize: F) -> Self
     where
-        S: Storage,
+        S: Jobs,
         F: Fn(Job) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<String, Error>> + Send,
     {
-        let docket = Docket::connect("september", &format!("memory://{}", Uuid::new_v4()))
-            .await
-            .map_err(|error| Error::internal("initialize summary queue", error))?;
         let claims = Arc::clone(&storage);
         docket
             .register(move |run: docket::Context, _: Dispatch| {
@@ -77,7 +71,7 @@ impl Worker {
             })
             .with(ExponentialRetry::attempts(3))
             .with(Timeout::after(SUMMARY_TIMEOUT));
-        Ok(Self { docket })
+        Self { docket }
     }
 
     /// Run until shutdown, then let running summaries finish for ten seconds.
@@ -111,7 +105,7 @@ impl Worker {
 
 /// Add a summary task for every job storage lets this worker claim. Storage
 /// bounds active claims, so this ends; a claim that fails to enqueue lapses.
-async fn dispatch(storage: &impl Storage, docket: &Docket) -> Result<(), Error> {
+async fn dispatch(storage: &impl Jobs, docket: &Docket) -> Result<(), Error> {
     while let Some(claim) = storage.claim().await? {
         let key = claim.token.to_string();
         docket
@@ -124,43 +118,50 @@ async fn dispatch(storage: &impl Storage, docket: &Docket) -> Result<(), Error> 
 }
 
 /// Summarize a claimed job, renewing its claim until the summary is published.
-/// A replaced claim means another worker owns the job, so this one stops.
-async fn build<F, Fut>(storage: &impl Storage, summarize: &F, claim: Claim) -> Result<(), Error>
+/// A lost claim means another worker owns the job, so this one stops.
+async fn build<F, Fut>(storage: &impl Jobs, summarize: &F, claim: Claim) -> Result<(), Error>
 where
     F: Fn(Job) -> Fut,
     Fut: Future<Output = Result<String, Error>>,
 {
-    let Claim { job, token, .. } = claim;
+    let Claim {
+        job,
+        token,
+        lease_seconds,
+    } = claim;
     let range = job.range;
     let node = Node::try_from(range)?;
+    // Renew well inside the lease storage granted, whatever its length.
+    let every =
+        (Duration::from_secs(lease_seconds) / RENEWALS_PER_LEASE).max(Duration::from_millis(100));
     // Refuse a stale delivery before spending time on a summary.
-    if replaced(storage.renew(node, token).await)? {
+    if lost(storage.renew(node, token).await)? {
         return Ok(());
     }
     let summary = summarize(job);
     tokio::pin!(summary);
-    let mut renewal = interval_at(Instant::now() + RENEW_EVERY, RENEW_EVERY);
+    let mut renewal = interval_at(Instant::now() + every, every);
     renewal.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let text = loop {
         tokio::select! {
             biased;
             text = &mut summary => break text?,
             _ = renewal.tick() => {
-                if replaced(storage.renew(node, token).await)? {
+                if lost(storage.renew(node, token).await)? {
                     return Ok(());
                 }
             }
         }
     };
     let completion = Completion { range, token, text };
-    replaced(storage.complete(completion).await)?;
+    lost(storage.complete(completion).await)?;
     Ok(())
 }
 
-fn replaced(result: Result<(), Error>) -> Result<bool, Error> {
+fn lost(result: Result<(), Error>) -> Result<bool, Error> {
     match result {
         Ok(()) => Ok(false),
-        Err(Error::Conflict) => Ok(true),
+        Err(Error::ClaimLost) => Ok(true),
         Err(error) => Err(error),
     }
 }

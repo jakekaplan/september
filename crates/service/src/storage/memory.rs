@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
 
-use september_memory::{Budget, Node, Zoom};
+use september_memory::{Budget, Node, Publication, Snapshot as Frozen, Views, Zoom};
 use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
 
@@ -10,17 +9,18 @@ use crate::{
     Error,
     archive::{Message, Receipt, Source},
     error::Invariant,
-    jobs::{Claim, Completion, Context, Input, Job, MAX_CLAIMS, MAX_SUMMARY_BYTES, SUMMARY_BYTES},
+    jobs::{
+        Claim, Completion, Context, Input, Job, LEASE, MAX_CLAIMS, MAX_ELIGIBLE_LEAVES,
+        MAX_SUMMARY_BYTES,
+    },
     snapshots::{Detail, Snapshot, Summary},
-    storage::Storage,
+    storage::{Archive, Jobs},
 };
 
-mod views;
-use views::{Projection, Views};
+mod snapshots;
+use snapshots::Snapshots;
 
 const MAX_MESSAGES: usize = 1024;
-const LEASE: Duration = Duration::from_secs(60);
-const MAX_ELIGIBLE_LEAVES: usize = 8;
 
 /// Volatile single-process storage, bounded to 1,024 messages and 128 snapshots.
 /// Cloning an `Arc<InMemory>` shares the archive; constructing another starts empty.
@@ -31,30 +31,32 @@ pub struct InMemory {
 struct State {
     messages: Vec<Message>,
     sources: BTreeMap<Source, u64>,
-    summaries: BTreeMap<Node, Completed>,
+    summaries: BTreeMap<Node, Published>,
     ready: VecDeque<Node>,
     unbuilt: BTreeSet<Node>,
     contexts: BTreeMap<Node, Context>,
     claims: BTreeMap<Node, (Uuid, Instant)>,
     expirations: BTreeSet<(Instant, Node)>,
     views: Views,
+    snapshots: Snapshots,
 }
 
-struct Completed {
+struct Published {
     text: Arc<str>,
     /// The claim that published a model summary; verbatim summaries have none.
     token: Option<Uuid>,
 }
 
 /// Every change one publication makes, prepared before any of them is applied.
-struct Publication {
-    summaries: BTreeMap<Node, Completed>,
-    projection: Projection,
-    job: Option<Node>,
+struct Prepared {
+    publication: Publication,
+    token: Option<Uuid>,
+    views: Views,
+    frozen: Vec<Frozen>,
 }
 
 impl InMemory {
-    /// Start an empty archive using the given view budget.
+    /// Start an empty archive whose live view batches within `budget`.
     #[must_use]
     pub fn new(budget: Budget) -> Self {
         Self {
@@ -67,7 +69,8 @@ impl InMemory {
                 contexts: BTreeMap::new(),
                 claims: BTreeMap::new(),
                 expirations: BTreeSet::new(),
-                views: Views::new(budget),
+                views: Views::new(budget, Budget::COMPACTION),
+                snapshots: Snapshots::default(),
             }),
         }
     }
@@ -79,7 +82,7 @@ impl Default for InMemory {
     }
 }
 
-impl Storage for InMemory {
+impl Archive for InMemory {
     fn is_durable(&self) -> bool {
         false
     }
@@ -103,14 +106,17 @@ impl Storage for InMemory {
         let id = u64::try_from(state.messages.len())
             .map_err(|error| Error::internal("assign archive cutoff", error))?;
         let node = Node::new(id, 1)?;
-        let publication = verbatim
-            .map(|text| state.prepare_publication(node, text.into(), None))
+        let prepared = verbatim
+            .map(|text| {
+                let summary = september_memory::Summary::new(node, text);
+                state.prepare_publication(summary, None)
+            })
             .transpose()?;
         // Everything that can fail has been prepared before this commit.
         state.sources.insert(message.source.clone(), id);
         state.messages.push(message);
-        if let Some(publication) = publication {
-            state.publish(publication);
+        if let Some(prepared) = prepared {
+            state.publish(prepared);
         } else {
             state.unbuilt.insert(node);
             if state.unbuilt.len() <= MAX_ELIGIBLE_LEAVES {
@@ -127,16 +133,19 @@ impl Storage for InMemory {
         let mut state = self.state.lock().await;
         let cutoff = u64::try_from(state.messages.len())
             .map_err(|error| Error::internal("assign archive cutoff", error))?;
-        state.views.prepare(id, cutoff)
+        let State {
+            views, snapshots, ..
+        } = &mut *state;
+        snapshots.prepare(id, cutoff, views.live())
     }
 
     async fn snapshot(&self, id: Uuid) -> Result<Snapshot, Error> {
-        self.state.lock().await.views.get(id)
+        self.state.lock().await.snapshots.get(id)
     }
 
     async fn zoom(&self, id: Uuid, node: Node) -> Result<Detail, Error> {
         let state = self.state.lock().await;
-        match state.views.frozen(id)?.zoom(node)? {
+        match state.snapshots.frozen(id)?.zoom(node)? {
             Zoom::Message(id) => Ok(Detail::Message {
                 id,
                 message: state.message(id)?.clone(),
@@ -146,7 +155,9 @@ impl Storage for InMemory {
             }),
         }
     }
+}
 
+impl Jobs for InMemory {
     async fn claim(&self) -> Result<Option<Claim>, Error> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
@@ -164,19 +175,10 @@ impl Storage for InMemory {
         }
         let mut selected = None;
         for (index, &node) in state.ready.iter().enumerate() {
-            let context = state
-                .contexts
-                .get(&node)
-                .cloned()
-                .map_or_else(|| state.views.context(node), Ok);
-            match context {
-                Ok(context) => {
-                    selected = Some((index, node, context));
-                    break;
-                }
-                // Let other ready parents shrink the context before admitting this job.
-                Err(Error::NotReady) => {}
-                Err(error) => return Err(error),
+            // Let other ready parents shrink the context before admitting this job.
+            if let Some(context) = state.context(node)? {
+                selected = Some((index, node, context));
+                break;
             }
         }
         let Some((index, node, context)) = selected else {
@@ -225,28 +227,28 @@ impl Storage for InMemory {
             return Err(Error::Invalid);
         }
         let mut state = self.state.lock().await;
-        if let Some(completed) = state.summaries.get(&node) {
-            return if *completed.text == *completion.text
-                && completed.token == Some(completion.token)
+        if let Some(published) = state.summaries.get(&node) {
+            return if *published.text == *completion.text
+                && published.token == Some(completion.token)
             {
                 Ok(())
             } else {
-                Err(Error::Conflict)
+                Err(Error::ClaimLost)
             };
         }
         state.live_claim(node, completion.token, Instant::now())?;
-        let publication =
-            state.prepare_publication(node, completion.text.into(), Some(completion.token))?;
-        state.publish(publication);
+        let summary = september_memory::Summary::new(node, completion.text);
+        let prepared = state.prepare_publication(summary, Some(completion.token))?;
+        state.publish(prepared);
         Ok(())
     }
 }
 
 impl State {
     fn live_claim(&self, node: Node, token: Uuid, now: Instant) -> Result<Instant, Error> {
-        let &(current, deadline) = self.claims.get(&node).ok_or(Error::Conflict)?;
+        let &(current, deadline) = self.claims.get(&node).ok_or(Error::ClaimLost)?;
         if current != token || deadline <= now {
-            return Err(Error::Conflict);
+            return Err(Error::ClaimLost);
         }
         Ok(deadline)
     }
@@ -269,56 +271,67 @@ impl State {
         })
     }
 
-    /// Prepare a publication and every parent it completes verbatim. Two children
-    /// that fit in one summary together are joined by a newline, with no model
-    /// call; the first parent that does not fit becomes a job.
+    fn built(&self, node: Node) -> Option<Arc<str>> {
+        self.summaries
+            .get(&node)
+            .map(|published| Arc::clone(&published.text))
+    }
+
+    /// The job's frozen context, or a new one if it fits; `None` means wait.
+    fn context(&self, node: Node) -> Result<Option<Context>, Error> {
+        if let Some(context) = self.contexts.get(&node) {
+            return Ok(Some(context.clone()));
+        }
+        let prefix = self
+            .views
+            .context(node)
+            .map_err(|error| Error::internal("select job context", error))?;
+        prefix
+            .map(|prefix| {
+                Ok(Context {
+                    cutoff: prefix.cutoff(),
+                    view: prefix
+                        .render()
+                        .map_err(|error| Error::internal("render job context", error))?,
+                })
+            })
+            .transpose()
+    }
+
     fn prepare_publication(
         &self,
-        node: Node,
-        text: Arc<str>,
+        summary: september_memory::Summary,
         token: Option<Uuid>,
-    ) -> Result<Publication, Error> {
-        let mut summaries = BTreeMap::from([(node, Completed { text, token })]);
-        let mut job = None;
-        let mut child = node;
-        while let Ok(parent) = child.parent()
-            && let Some([left, right]) = parent.children()
-        {
-            let text = |node| completed_text(&summaries, &self.summaries, node);
-            // Each child publishes once, so only the second one reaches its parent.
-            let (Some(left), Some(right)) = (text(left), text(right)) else {
-                break;
-            };
-            let joined = format!("{left}\n{right}");
-            if joined.len() > SUMMARY_BYTES {
-                job = Some(parent);
-                break;
-            }
-            let completed = Completed {
-                text: joined.into(),
-                token: None,
-            };
-            summaries.insert(parent, completed);
-            child = parent;
-        }
-        let projection = self
-            .views
-            .advance(|node| completed_text(&summaries, &self.summaries, node))?;
-        Ok(Publication {
-            summaries,
-            projection,
-            job,
+    ) -> Result<Prepared, Error> {
+        let publication = Publication::new(summary, |node| self.built(node));
+        let mut views = self.views.clone();
+        let frozen = views
+            .advance(
+                |node| publication.text(node).or_else(|| self.built(node)),
+                |cutoff| self.snapshots.is_waiting(cutoff),
+            )
+            .map_err(|error| Error::internal("advance views", error))?;
+        Ok(Prepared {
+            publication,
+            token,
+            views,
+            frozen,
         })
     }
 
-    fn publish(&mut self, publication: Publication) {
-        let Publication {
-            summaries,
-            projection,
-            job,
-        } = publication;
-        for (node, completed) in summaries {
-            self.summaries.insert(node, completed);
+    fn publish(&mut self, prepared: Prepared) {
+        let Prepared {
+            publication,
+            token,
+            views,
+            frozen,
+        } = prepared;
+        // Only the supplied summary has a claim; joined parents are verbatim.
+        let tokens = std::iter::once(token).chain(std::iter::repeat(None));
+        for (summary, token) in publication.summaries().iter().zip(tokens) {
+            let node = summary.node();
+            let text = summary.shared_text();
+            self.summaries.insert(node, Published { text, token });
             self.contexts.remove(&node);
             if self.unbuilt.remove(&node)
                 && let Some(&eligible) = self.unbuilt.iter().nth(MAX_ELIGIBLE_LEAVES - 1)
@@ -329,21 +342,10 @@ impl State {
                 self.expirations.remove(&(deadline, node));
             }
         }
-        self.views.apply(projection);
-        self.ready.extend(job);
+        self.views = views;
+        self.snapshots.make_ready(frozen);
+        self.ready.extend(publication.job());
     }
-}
-
-/// Completed text from a prepared publication, else from the archive.
-fn completed_text(
-    prepared: &BTreeMap<Node, Completed>,
-    archive: &BTreeMap<Node, Completed>,
-    node: Node,
-) -> Option<Arc<str>> {
-    prepared
-        .get(&node)
-        .or_else(|| archive.get(&node))
-        .map(|completed| Arc::clone(&completed.text))
 }
 
 #[cfg(test)]

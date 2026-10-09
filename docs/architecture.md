@@ -7,24 +7,31 @@ archive. Memory is shared; active tool loops remain separate.
 **The hosted system below is intended design.** The [README](../README.md#status)
 is the single statement of what is implemented. In short:
 
-- `september-memory` holds only the summaries in the current view, never the
-  full tree. `View` appends completed leaves and batch-merges with a lookup of
-  built parents, so an unbuilt parent is simply absent. It reports how many
-  merges each update made and keeps an unfinished batch's shrinking state, so
-  restoring a saved cover needs only its own summaries. A `Snapshot` zooms only
-  into its frozen cover lines and their descendants.
-- `september` implements the `Storage` contract in memory. A publication is
-  prepared in full, then committed: the summary, every parent its children now
-  fill verbatim, the live and compaction views, and any snapshot waiting on that
-  cutoff. The first parent too long to join becomes the only new job.
+- `september-memory` owns every rule that does not depend on storage. It holds
+  only the summaries in the current views, never the full tree, and looks up
+  built parents through a closure, so an unbuilt parent is simply absent.
+  - `View` batch-merges, reports how many merges each update made, and keeps an
+    unfinished batch's shrinking state.
+  - `Views` keeps the compaction view following the live view and selects each
+    job's context.
+  - `Publication` joins short pairs verbatim and names the first parent that
+    needs a model.
+  - A `Snapshot` zooms only into its frozen cover lines and their descendants.
+- `september` splits storage into `Archive` for clients and `Jobs` for workers.
+  The in-memory backend only stores state and calls the core. It prepares a
+  whole publication, then commits it: the summaries, both views, and any
+  snapshot waiting on that cutoff. A Postgres backend would do the same inside a
+  transaction, preloading the summaries the core's lookups need.
 - Claims are fenced by token, renewable for 60 seconds at a time, and capped at
   eight. A job's compaction-view context freezes on its first claim and
   survives expiry. Jobs whose context exceeds 32,000 bytes wait while other
   parents shrink it. Ready jobs come from queues and an expiry index, never a
   tree scan.
-- The Docket worker dispatches claims as tasks and lets Docket handle retries
-  and timeouts. On shutdown it lets running summaries finish for ten seconds,
-  then cancels them; their claims lapse and are claimed again.
+- The Docket worker depends only on `Jobs` and receives its queue from the
+  caller, so moving Docket to Redis is a setting. It dispatches claims as tasks,
+  renews three times per lease the claim grants, and leaves retries and timeouts
+  to Docket. On shutdown it lets running summaries finish for ten seconds, then
+  cancels them; their claims lapse and are claimed again.
 
 ## Service boundary
 

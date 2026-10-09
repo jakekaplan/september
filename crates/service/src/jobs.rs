@@ -1,5 +1,8 @@
 //! Fenced summary claims and immutable publication inputs.
 
+use std::time::Duration;
+
+use september_memory::SUMMARY_BYTES;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -8,16 +11,18 @@ use crate::{
     snapshots::{Range, Summary},
 };
 
-/// The summary size a model is asked for, in UTF-8 bytes. A message or a pair of
-/// children that fits within it is published verbatim, without a model call.
-pub const SUMMARY_BYTES: usize = 512;
-
 /// The largest accepted summary. The view measures real sizes, so a summary a
 /// little over [`SUMMARY_BYTES`] is kept rather than stalling every later snapshot.
 pub const MAX_SUMMARY_BYTES: usize = 2 * SUMMARY_BYTES;
 
 /// Summaries built at once across all workers.
 pub(crate) const MAX_CLAIMS: usize = 8;
+
+/// A leaf becomes a job only while fewer than this many earlier leaves are unbuilt.
+pub(crate) const MAX_ELIGIBLE_LEAVES: usize = 8;
+
+/// How long a claim lives without renewal.
+pub(crate) const LEASE: Duration = Duration::from_secs(60);
 
 /// Immutable inputs to a claimed summary job. Workers treat all text as data.
 #[derive(Debug, Deserialize, Serialize)]

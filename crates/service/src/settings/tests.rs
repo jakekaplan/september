@@ -17,6 +17,7 @@ fn defaults_need_no_model_or_credentials() {
     assert_eq!(settings.bind.to_string(), "127.0.0.1:3000");
     assert_eq!(settings.summarizer, Summarizer::None);
     assert!(settings.model.is_none());
+    assert_eq!(settings.queue, "memory://september");
 }
 
 #[test]
@@ -52,12 +53,17 @@ fn environment_overrides_toml_and_missing_explicit_file_fails() {
     .unwrap();
     let settings = Settings::read(
         Some(&path),
-        environment(&[("SUMMARIZER", "anthropic"), ("MODEL", "from-env")]),
+        environment(&[
+            ("SUMMARIZER", "anthropic"),
+            ("MODEL", "from-env"),
+            ("QUEUE", "redis://localhost:6379/0"),
+        ]),
     )
     .unwrap();
     fs::remove_file(&path).unwrap();
     assert_eq!(settings.summarizer, Summarizer::Model(Provider::Anthropic));
     assert_eq!(settings.model.as_deref(), Some("from-env"));
+    assert_eq!(settings.queue, "redis://localhost:6379/0");
     assert_eq!(settings.bind.port(), 4000);
     assert!(Settings::read(Some(&path), environment(&[])).is_err());
 }
