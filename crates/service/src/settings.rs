@@ -6,12 +6,11 @@ use config::{Config, Environment, File};
 use september::summarizer::Provider;
 use serde::Deserialize;
 
-/// What builds summaries: nothing (external workers only), fakes, or a model.
+/// What builds summaries: a model, or nothing, leaving jobs to external workers.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Summarizer {
     None,
-    Fake,
     #[serde(untagged)]
     Model(Provider),
 }

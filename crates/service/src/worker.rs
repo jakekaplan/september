@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     Error,
-    jobs::{Claim, Completion, Input, Job, MAX_CLAIMS},
+    jobs::{Claim, Completion, Job, MAX_CLAIMS},
     storage::Storage,
 };
 
@@ -163,17 +163,4 @@ fn replaced(result: Result<(), Error>) -> Result<bool, Error> {
         Err(Error::Conflict) => Ok(true),
         Err(error) => Err(error),
     }
-}
-
-/// Produce visibly fake summaries for explicitly enabled local simulations.
-/// This does not preserve message meaning and must not summarize real archives.
-///
-/// # Errors
-/// This deterministic fake always succeeds; the result matches worker callbacks.
-pub async fn fake(job: Job) -> Result<String, Error> {
-    tokio::task::yield_now().await;
-    Ok(match job.input {
-        Input::Message { message } => format!("FAKE leaf: {} source bytes", message.text.len()),
-        Input::Children { .. } => "FAKE parent: two child summaries".into(),
-    })
 }

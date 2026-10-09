@@ -15,7 +15,7 @@ use september::{
     jobs::{Claim, Completion, Job, MAX_SUMMARY_BYTES},
     snapshots::{Detail, Snapshot},
     storage::{InMemory, Storage},
-    worker::{Worker, fake},
+    worker::Worker,
 };
 use september_memory::{Budget, Node};
 use tokio::{
@@ -40,6 +40,16 @@ fn message(entry: usize) -> Message {
         call_id: None,
         text: format!("Synthetic message {entry}. ").repeat(40),
     }
+}
+
+/// A deterministic stand-in for a model. Its summaries are short enough that
+/// every pair of them joins verbatim.
+async fn summarize(job: Job) -> Result<String, Error> {
+    tokio::task::yield_now().await;
+    Ok(format!(
+        "summary of {}+{}",
+        job.range.start, job.range.length
+    ))
 }
 
 async fn ready(
@@ -120,7 +130,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
             let calls = calls.clone();
             async move {
                 let _permit = gate.acquire_owned().await.unwrap();
-                let summary = fake(job).await;
+                let summary = summarize(job).await;
                 calls.send_modify(|count| *count += 1);
                 summary
             }
@@ -143,7 +153,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
     gate.add_permits(8);
     timeout(
         Duration::from_secs(5),
-        // Fake leaf summaries are short, so every parent joins them verbatim.
+        // Stand-in summaries are short, so every parent joins them verbatim.
         called.wait_for(|count| *count == 8),
     )
     .await
@@ -192,7 +202,7 @@ async fn eight_jobs_drain_on_shutdown_without_claiming_more_work() {
             async move {
                 calls.send_modify(|count| *count += 1);
                 let _permit = gate.acquire_owned().await.unwrap();
-                fake(job).await
+                summarize(job).await
             }
         }
     })
@@ -235,7 +245,7 @@ async fn transient_failure_retries_and_completes() {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     return Err(Error::NotReady);
                 }
-                fake(job).await
+                summarize(job).await
             }
         }
     })
@@ -269,7 +279,7 @@ async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
             async move {
                 started.notify_one();
                 let _permit = gate.acquire_owned().await.unwrap();
-                fake(job).await
+                summarize(job).await
             }
         }
     })

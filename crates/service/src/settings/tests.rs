@@ -24,6 +24,7 @@ fn validates_startup_settings_without_echoing_values() {
     for values in [
         vec![("SUMMARIZER", "secret-invalid-provider")],
         vec![("SUMMARIZER", "openai")],
+        vec![("SUMMARIZER", "fake")],
         vec![("SUMMARIZER", "anthropic"), ("MODEL", " ")],
         vec![("BIND", "0.0.0.0:3000")],
         vec![("STORAGE", "memory")],

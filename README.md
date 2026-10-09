@@ -25,8 +25,8 @@ This README is the single statement of what is implemented.
   no model call.
 - **Storage**: in memory only. Acknowledgments are volatile; restarting loses
   all data.
-- **Worker**: opt-in Docket worker on an in-process `memory://` queue, with
-  OpenAI, Anthropic, or visibly fake summaries.
+- **Worker**: opt-in Docket worker on an in-process `memory://` queue,
+  summarizing with OpenAI or Anthropic.
 - **Not implemented**: persistent storage, Redis-backed Docket, authentication,
   MCP, a CLI, and harness adapters. Live summary quality is unvalidated.
 
@@ -48,9 +48,6 @@ and model and set that provider's standalone API key:
 SEPTEMBER_SUMMARIZER=openai SEPTEMBER_MODEL=gpt-6-luna cargo run --locked -p september
 # Or SEPTEMBER_SUMMARIZER=anthropic with a Claude model and ANTHROPIC_API_KEY.
 ```
-
-For synthetic data only, `SEPTEMBER_SUMMARIZER=fake` writes summaries labelled
-`FAKE` and marks every response `x-september-summarizer: fake`.
 
 Settings come from defaults, then an optional TOML file named by
 `SEPTEMBER_CONFIG`, then `SEPTEMBER_*` environment variables. Unknown settings,

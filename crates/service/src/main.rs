@@ -4,17 +4,7 @@ mod settings;
 
 use std::{error::Error, process::ExitCode, sync::Arc};
 
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::{self, Next},
-};
-use september::{
-    router, serve,
-    storage::InMemory,
-    summarizer::Summarizer,
-    worker::{self, Worker},
-};
+use september::{router, serve, storage::InMemory, summarizer::Summarizer, worker::Worker};
 use tokio::{net::TcpListener, signal, sync::watch, task::JoinSet};
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
@@ -43,9 +33,6 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let storage = Arc::new(InMemory::default());
     let worker = match settings.summarizer {
         settings::Summarizer::None => None,
-        settings::Summarizer::Fake => {
-            Some(Worker::memory(Arc::clone(&storage), worker::fake).await?)
-        }
         settings::Summarizer::Model(provider) => {
             let api_key = settings::api_key(provider)?;
             let model = settings.model.ok_or("model setting missing")?;
@@ -59,19 +46,7 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             )
         }
     };
-    let mut app = router(storage);
-    if settings.summarizer == settings::Summarizer::Fake {
-        tracing::warn!("fake summarizer enabled; use synthetic messages only");
-        app = app.layer(middleware::from_fn(
-            |request: Request, next: Next| async move {
-                let mut response = next.run(request).await;
-                response
-                    .headers_mut()
-                    .insert("x-september-summarizer", HeaderValue::from_static("fake"));
-                response
-            },
-        ));
-    }
+    let app = router(storage);
     let listener = TcpListener::bind(settings.bind).await?;
     let address = listener.local_addr()?;
     let shutdown = shutdown_signal()?;

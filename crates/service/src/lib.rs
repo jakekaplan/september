@@ -1,7 +1,7 @@
 //! September's HTTP service and atomic storage operations.
 //!
 //! The first backend is explicitly volatile and shared within one process.
-//! Summary jobs support external completion and opt-in model or fake workers.
+//! Summary jobs are completed by external workers or an opt-in model worker.
 
 pub mod archive;
 mod error;

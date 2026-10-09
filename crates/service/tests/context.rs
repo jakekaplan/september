@@ -12,12 +12,13 @@ use axum::{
     http::Request,
 };
 use september::{
+    Error,
     archive::{Kind, Message, Source},
     jobs::{Claim, Completion, Job},
     router,
     snapshots::Snapshot,
     storage::{InMemory, Storage},
-    worker::{Worker, fake},
+    worker::Worker,
 };
 use september_memory::Budget;
 use tokio::sync::{mpsc, oneshot};
@@ -39,6 +40,16 @@ fn message(entry: usize, text: &str) -> Message {
         call_id: None,
         text: text.into(),
     }
+}
+
+/// A deterministic stand-in for a model. Its summaries are short enough that
+/// every pair of them joins verbatim.
+async fn summarize(job: Job) -> Result<String, Error> {
+    tokio::task::yield_now().await;
+    Ok(format!(
+        "summary of {}+{}",
+        job.range.start, job.range.length
+    ))
 }
 
 async fn publish(storage: &InMemory, claim: &Claim, text: &str) {
@@ -263,7 +274,7 @@ async fn continuous_worker_receives_the_claims_historical_context() {
         let contexts = contexts.clone();
         async move {
             contexts.send(job.context.clone()).await.unwrap();
-            fake(job).await
+            summarize(job).await
         }
     })
     .await

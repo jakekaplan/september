@@ -123,11 +123,9 @@ within 60 seconds or abandon that attempt. The in-process continuous worker uses
 work. OpenAI and Anthropic access is available through the opt-in in-process
 worker; provider spend policy and live summary-quality validation remain future work.
 
-`SEPTEMBER_SUMMARIZER=fake` starts the Docket worker alongside HTTP for
-synthetic local testing. It labels output `FAKE` and every HTTP response with
-`x-september-summarizer: fake`; the default `none` leaves jobs for external
-workers. `openai` and `anthropic` use the same worker with a required model and a
-standalone API key; see [running locally](../README.md#run-locally) and [how
+The default `SEPTEMBER_SUMMARIZER=none` leaves jobs for external workers.
+`openai` and `anthropic` start the Docket worker alongside HTTP, with a required
+model and a standalone API key; see [running locally](../README.md#run-locally) and [how
 summaries are built](../README.md#how-summaries-are-built). A failed attempt is
 retried by Docket up to three times. If all three fail, the claim lapses and the
 job is claimed again. Pending snapshots never receive a partial view. On
