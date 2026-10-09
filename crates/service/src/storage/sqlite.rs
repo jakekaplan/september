@@ -28,8 +28,8 @@ mod snapshots;
 const SCHEMA: &str = include_str!("sqlite/schema.sql");
 const SCHEMA_VERSION: i64 = 1;
 
-/// Durable storage in one SQLite file, held by this process until dropped.
-/// Cloning an `Arc<Sqlite>` shares the archive; open a file only once.
+/// Durable storage in one SQLite file, held exclusively by this process until
+/// dropped. Cloning an `Arc<Sqlite>` shares the archive.
 pub struct Sqlite {
     state: Arc<Mutex<State>>,
 }
@@ -50,7 +50,7 @@ pub enum OpenError {
     /// SQLite refused it, including when another server holds it.
     #[error(transparent)]
     Database(#[from] rusqlite::Error),
-    /// A newer server wrote it.
+    /// Its schema version is not one this server knows.
     #[error("unknown schema version {0}")]
     UnknownSchema(i64),
 }
@@ -375,11 +375,9 @@ fn save_view(db: &Connection, name: &str, view: &View) -> Result<(), Error> {
 
 /// The ID the next message gets, which is also the archive's cutoff.
 fn next_id(db: &Connection) -> Result<u64, Error> {
-    Ok(
-        db.query_row("SELECT COALESCE(MAX(id) + 1, 0) FROM messages", [], |row| {
-            row.get(0)
-        })?,
-    )
+    Ok(db
+        .prepare_cached("SELECT COALESCE(MAX(id) + 1, 0) FROM messages")?
+        .query_row([], |row| row.get(0))?)
 }
 
 /// The unbuilt leaf with `index` earlier unbuilt leaves, if there is one.

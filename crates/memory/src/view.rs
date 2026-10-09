@@ -301,12 +301,14 @@ impl View {
 /// Whether `summaries` cover the archive prefix from 0 without gaps or overlaps.
 pub(crate) fn is_cover(summaries: &[Summary]) -> bool {
     let mut next = 0;
-    summaries.iter().all(|summary| {
+    for summary in summaries {
         let node = summary.node();
-        let follows = node.start() == next;
+        if node.start() != next {
+            return false;
+        }
         next = node.end();
-        follows
-    })
+    }
+    true
 }
 
 fn rendered_bytes(summaries: &[Summary]) -> Result<usize, Error> {

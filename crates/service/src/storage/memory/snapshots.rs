@@ -86,9 +86,10 @@ impl Snapshots {
     ) -> Result<Vec<(Uuid, Frozen)>, Error> {
         let mut frozen = Vec::new();
         for view in reached {
-            let waiting = self.waiting.get(&view.cutoff()).into_iter().flatten();
-            for (&id, saved) in waiting.filter_map(|id| Some((id, self.saved.get(id)?))) {
-                frozen.push((id, freeze(view, saved.cutoff, saved.within, &built)?));
+            for id in self.waiting.get(&view.cutoff()).into_iter().flatten() {
+                if let Some(saved) = self.saved.get(id) {
+                    frozen.push((*id, freeze(view, saved.cutoff, saved.within, &built)?));
+                }
             }
         }
         Ok(frozen)
