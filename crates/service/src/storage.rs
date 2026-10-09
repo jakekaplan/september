@@ -31,7 +31,15 @@ pub trait Archive: Send + Sync + 'static {
 
     /// Freeze the current archive cutoff, returning an existing snapshot on retry.
     /// The caller generates one UUID per interaction before its first request.
-    fn prepare(&self, id: Uuid) -> impl Future<Output = Result<Snapshot, Error>> + Send;
+    ///
+    /// `within` asks for a view of at most that many bytes, for a harness that
+    /// takes less context: the frozen copy is merged further through built
+    /// parents, and can stay larger while they are unbuilt.
+    fn prepare(
+        &self,
+        id: Uuid,
+        within: Option<usize>,
+    ) -> impl Future<Output = Result<Snapshot, Error>> + Send;
 
     /// Read the original cutoff's readiness and fixed view.
     fn snapshot(&self, id: Uuid) -> impl Future<Output = Result<Snapshot, Error>> + Send;

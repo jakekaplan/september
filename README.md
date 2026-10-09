@@ -83,6 +83,11 @@ and after compaction. Claude reaches older detail through the plugin's `zoom` an
 `date` tools; a hook fills in the session's snapshot, so the model never handles
 it. Set `SEPTEMBER_URL` if the server is not at `http://127.0.0.1:3000`.
 
+Claude Code shows at most 10,000 characters of hook context, so the plugin asks
+for a view of about 9 KB: the same history in about 20 lines, with old work in
+large lines and recent work line by line. Claude zooms into a line for detail.
+Merging down needs summaries of older ranges, so run a summarizer.
+
 Claude Code cannot remove earlier messages, so within one long session its own
 history still grows until it compacts; each new session starts with everything
 from every harness. Uploads are best effort: if the server is down, those

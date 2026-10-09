@@ -43,6 +43,12 @@ inside a `<chat>` block. Provenance and timestamps stay in the archive; zoom
 returns them. Repeating the PUT returns that same interaction, even if other
 sessions have uploaded more messages. Use GET on the same URL to read it again.
 
+A harness that takes less context can add `?within=<bytes>`. The view is then a
+copy merged further, older lines first, toward that size: it covers the same
+messages in fewer, coarser lines, and the live view is unchanged. Merges use
+only built parents, so the copy can stay larger while summaries are pending. A
+size too small for an empty `<chat>` block returns 400.
+
 Retrieve the original:
 
 ```sh

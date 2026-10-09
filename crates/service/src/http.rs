@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -102,11 +103,21 @@ async fn ingest<S: Archive>(
     Ok((status, Json(receipt)))
 }
 
+/// An optional size limit for a harness that takes less context.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Preparation {
+    within: Option<usize>,
+}
+
 async fn prepare<S: Archive>(
     State(storage): State<Arc<S>>,
     Path(id): Path<Uuid>,
+    Query(preparation): Query<Preparation>,
 ) -> Result<Response, Error> {
-    Ok(snapshot_response(storage.prepare(id).await?))
+    Ok(snapshot_response(
+        storage.prepare(id, preparation.within).await?,
+    ))
 }
 
 async fn snapshot<S: Archive>(

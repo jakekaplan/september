@@ -43,6 +43,11 @@ from; length 1 gives the message whole. date(id) gives a message's date and \
 time. Summaries keep little of tool output, so say in your reply what you \
 learned that will matter later."""
 
+# Claude Code saves hook context over 10,000 characters to a file and shows only
+# a preview, so the guide and the view must fit within it together.
+CONTEXT_CHARS = 10_000
+VIEW_BYTES = CONTEXT_CHARS - len(MEMORY_GUIDE) - 64
+
 UNREADY_GUIDE = """\
 September memory is still summarizing earlier messages, so it is not loaded \
 for this session. zoom and date may answer once it is ready."""
@@ -189,8 +194,8 @@ def upload(messages: list[dict[str, Any]]) -> None:
 
 
 def ready_snapshot(snapshot: str) -> dict[str, Any] | None:
-    """Freeze this interaction and wait briefly for its summaries."""
-    status, body = request("PUT", f"/v1/snapshots/{snapshot}")
+    """Freeze this interaction, sized for Claude, and wait briefly for summaries."""
+    status, body = request("PUT", f"/v1/snapshots/{snapshot}?within={VIEW_BYTES}")
     deadline = time.monotonic() + READY_WAIT_SECONDS
     while status == 202 and time.monotonic() < deadline:
         time.sleep(0.5)

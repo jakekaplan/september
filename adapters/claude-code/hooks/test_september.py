@@ -79,6 +79,31 @@ class Upload(unittest.TestCase):
             self.assertEqual(warn.called, warned, status)
 
 
+class SessionStart(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patch = mock.patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": folder.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_the_view_is_requested_small_enough_to_reach_claude_whole(self) -> None:
+        view = "<chat>\n" + "x" * (september.VIEW_BYTES - 14) + "</chat>"
+        calls = []
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, object]:
+            calls.append((method, path))
+            return 200, {"status": "ready", "view": view}
+
+        with mock.patch.object(september, "request", request):
+            output = september.session_start({"session_id": "s-1"})
+        self.assertEqual(calls[0][0], "PUT")
+        self.assertTrue(calls[0][1].endswith(f"?within={september.VIEW_BYTES}"))
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(context.endswith(view))
+        self.assertLessEqual(len(context), september.CONTEXT_CHARS)
+
+
 class Stamp(unittest.TestCase):
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory()

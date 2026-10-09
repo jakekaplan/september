@@ -143,7 +143,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
     }
     let id = Uuid::new_v4();
     assert!(matches!(
-        storage.prepare(id).await.unwrap(),
+        storage.prepare(id, None).await.unwrap(),
         Snapshot::Pending { cutoff: 8, .. }
     ));
     gate.add_permits(8);
@@ -158,7 +158,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
     let frozen = serde_json::to_value(ready(storage.as_ref(), id).await.unwrap()).unwrap();
     storage.ingest(message(8)).await.unwrap();
     let later = Uuid::new_v4();
-    storage.prepare(later).await.unwrap();
+    storage.prepare(later, None).await.unwrap();
     assert!(matches!(
         ready(storage.as_ref(), later).await.unwrap(),
         Snapshot::Ready { cutoff: 9, .. }
@@ -229,7 +229,7 @@ async fn transient_failure_retries_and_completes() {
     let storage = Arc::new(InMemory::default());
     storage.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
-    storage.prepare(id).await.unwrap();
+    storage.prepare(id, None).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let worker = Worker::new(queue().await, Arc::clone(&storage), {
         let calls = Arc::clone(&calls);
@@ -259,7 +259,7 @@ async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
     let mut renewed = storage.renewals.subscribe();
     storage.inner.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
-    storage.inner.prepare(id).await.unwrap();
+    storage.inner.prepare(id, None).await.unwrap();
     let started = Arc::new(Notify::new());
     let gate = Arc::new(Semaphore::new(0));
     let worker = Worker::new(queue().await, Arc::clone(&storage), {
@@ -306,7 +306,7 @@ async fn rejected_results_retry_then_their_claim_lapses_for_another_worker() {
     let storage = Arc::new(InMemory::default());
     storage.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
-    storage.prepare(id).await.unwrap();
+    storage.prepare(id, None).await.unwrap();
     let (calls, mut called) = watch::channel(0);
     let worker = Worker::new(queue().await, Arc::clone(&storage), move |_| {
         calls.send_modify(|count| *count += 1);

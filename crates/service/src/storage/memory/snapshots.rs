@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use september_memory::{Snapshot as Frozen, View};
+use september_memory::{Budget, Node, Snapshot as Frozen, View};
 use uuid::Uuid;
 
 use crate::{Error, snapshots::Snapshot};
@@ -16,6 +17,7 @@ pub(super) struct Snapshots {
 
 struct Saved {
     cutoff: u64,
+    within: Option<Budget>,
     frozen: Option<Frozen>,
 }
 
@@ -26,7 +28,9 @@ impl Snapshots {
         &mut self,
         id: Uuid,
         cutoff: u64,
+        within: Option<Budget>,
         live: &View,
+        built: impl Fn(Node) -> Option<Arc<str>>,
     ) -> Result<Snapshot, Error> {
         if self.saved.contains_key(&id) {
             return self.get(id);
@@ -35,15 +39,19 @@ impl Snapshots {
             return Err(Error::Capacity);
         }
         let frozen = if live.cutoff() == cutoff {
-            Some(
-                live.freeze(cutoff)
-                    .map_err(|error| Error::internal("freeze snapshot", error))?,
-            )
+            Some(freeze(live, within, built)?)
         } else {
             self.waiting.entry(cutoff).or_default().push(id);
             None
         };
-        self.saved.insert(id, Saved { cutoff, frozen });
+        self.saved.insert(
+            id,
+            Saved {
+                cutoff,
+                within,
+                frozen,
+            },
+        );
         self.get(id)
     }
 
@@ -77,14 +85,43 @@ impl Snapshots {
         self.waiting.contains_key(&cutoff)
     }
 
-    /// Give each waiting interaction the snapshot frozen at its cutoff.
-    pub(super) fn make_ready(&mut self, frozen: Vec<Frozen>) {
-        for snapshot in frozen {
-            for id in self.waiting.remove(&snapshot.cutoff()).unwrap_or_default() {
-                if let Some(saved) = self.saved.get_mut(&id) {
-                    saved.frozen = Some(snapshot.clone());
-                }
+    /// Freeze each interaction waiting at the cutoffs the live view `reached`,
+    /// at its own size, without changing anything yet.
+    pub(super) fn freeze_waiting(
+        &self,
+        reached: &[View],
+        built: impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<Vec<(Uuid, Frozen)>, Error> {
+        let mut frozen = Vec::new();
+        for view in reached {
+            for &id in self.waiting.get(&view.cutoff()).into_iter().flatten() {
+                let within = self.saved.get(&id).and_then(|saved| saved.within);
+                frozen.push((id, freeze(view, within, &built)?));
+            }
+        }
+        Ok(frozen)
+    }
+
+    /// Give waiting interactions the snapshots frozen for them.
+    pub(super) fn make_ready(&mut self, frozen: Vec<(Uuid, Frozen)>) {
+        for (id, snapshot) in frozen {
+            self.waiting.remove(&snapshot.cutoff());
+            if let Some(saved) = self.saved.get_mut(&id) {
+                saved.frozen = Some(snapshot);
             }
         }
     }
+}
+
+fn freeze(
+    view: &View,
+    within: Option<Budget>,
+    built: impl Fn(Node) -> Option<Arc<str>>,
+) -> Result<Frozen, Error> {
+    let cutoff = view.cutoff();
+    match within {
+        None => view.freeze(cutoff),
+        Some(budget) => view.freeze_within(cutoff, budget, built),
+    }
+    .map_err(|error| Error::internal("freeze snapshot", error))
 }

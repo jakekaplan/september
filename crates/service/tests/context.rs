@@ -200,7 +200,7 @@ async fn smaller_view_batches_independently_and_counts_utf8_bytes() {
             publish(&storage, &claim, &"é".repeat(200)).await;
         }
     }
-    let Snapshot::Ready { view, .. } = storage.prepare(Uuid::new_v4()).await.unwrap() else {
+    let Snapshot::Ready { view, .. } = storage.prepare(Uuid::new_v4(), None).await.unwrap() else {
         panic!("ready")
     };
     assert!(view.len() > 32_000);

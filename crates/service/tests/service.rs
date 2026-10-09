@@ -78,7 +78,7 @@ async fn source_retries_are_idempotent_and_snapshots_retrieve_originals() {
         Err(Error::Conflict)
     ));
     let snapshot = Uuid::new_v4();
-    assert_eq!(view(storage.prepare(snapshot).await.unwrap()).0, 1);
+    assert_eq!(view(storage.prepare(snapshot, None).await.unwrap()).0, 1);
     let Detail::Message {
         id,
         message: retrieved,
@@ -92,7 +92,7 @@ async fn source_retries_are_idempotent_and_snapshots_retrieve_originals() {
         .ingest(message(1, "Other session's update"))
         .await
         .unwrap();
-    assert_eq!(view(storage.prepare(snapshot).await.unwrap()).0, 1);
+    assert_eq!(view(storage.prepare(snapshot, None).await.unwrap()).0, 1);
     assert!(matches!(
         storage.zoom(snapshot, node(1, 1)).await,
         Err(Error::OutsideSnapshot)
@@ -120,7 +120,10 @@ async fn concurrent_writers_assign_contiguous_ids_and_deduplicate() {
     }
     assert_eq!(ids, (0..32).collect());
     assert_eq!(duplicates, 32);
-    assert_eq!(view(storage.prepare(Uuid::new_v4()).await.unwrap()).0, 32);
+    assert_eq!(
+        view(storage.prepare(Uuid::new_v4(), None).await.unwrap()).0,
+        32
+    );
 }
 
 #[tokio::test]
@@ -129,7 +132,7 @@ async fn pending_snapshots_keep_their_cutoff_across_out_of_order_completion() {
     storage.ingest(message(0, &"a".repeat(600))).await.unwrap();
     let first = Uuid::new_v4();
     assert!(matches!(
-        storage.prepare(first).await.unwrap(),
+        storage.prepare(first, None).await.unwrap(),
         Snapshot::Pending { cutoff: 1, .. }
     ));
     assert!(matches!(
@@ -138,7 +141,7 @@ async fn pending_snapshots_keep_their_cutoff_across_out_of_order_completion() {
     ));
     storage.ingest(message(1, &"b".repeat(600))).await.unwrap();
     let second = Uuid::new_v4();
-    storage.prepare(second).await.unwrap();
+    storage.prepare(second, None).await.unwrap();
     let a = storage.claim().await.unwrap().unwrap();
     let b = storage.claim().await.unwrap().unwrap();
     assert!(matches!(&a.job.input, Input::Message { message } if message.text.len() == 600));
@@ -179,7 +182,7 @@ async fn batch_merges_change_future_views_but_not_frozen_navigation() {
         .await
         .unwrap();
     let old = Uuid::new_v4();
-    let old_view = view(storage.prepare(old).await.unwrap());
+    let old_view = view(storage.prepare(old, None).await.unwrap());
     assert!(matches!(
         storage.zoom(old, node(0, 2)).await,
         Err(Error::OutsideSnapshot)
@@ -193,7 +196,7 @@ async fn batch_merges_change_future_views_but_not_frozen_navigation() {
     .await
     .unwrap();
     let new = Uuid::new_v4();
-    let (_, new_view) = view(storage.prepare(new).await.unwrap());
+    let (_, new_view) = view(storage.prepare(new, None).await.unwrap());
     assert!(new_view.contains("0+2|"));
     assert!(new_view.len() <= 80);
     assert_eq!(view(storage.snapshot(old).await.unwrap()), old_view);
@@ -258,7 +261,7 @@ async fn publication_schedules_each_parent_once_and_merges_through_multiple_leve
     assert!(storage.claim().await.unwrap().is_none());
     let id = Uuid::new_v4();
     assert_eq!(
-        view(storage.prepare(id).await.unwrap()),
+        view(storage.prepare(id, None).await.unwrap()),
         (4, "<chat>\n0+4|summary\n</chat>".into())
     );
     for start in 0..4 {
@@ -317,19 +320,19 @@ async fn invalid_messages_do_not_consume_ids_or_create_work() {
 async fn fresh_backends_are_empty_and_capacity_rejections_leave_retries_working() {
     let storage = InMemory::default();
     let id = Uuid::new_v4();
-    storage.prepare(id).await.unwrap();
+    storage.prepare(id, None).await.unwrap();
     assert!(matches!(
         InMemory::default().snapshot(id).await,
         Err(Error::NotFound)
     ));
     for _ in 1..128 {
-        storage.prepare(Uuid::new_v4()).await.unwrap();
+        storage.prepare(Uuid::new_v4(), None).await.unwrap();
     }
     assert!(matches!(
-        storage.prepare(Uuid::new_v4()).await,
+        storage.prepare(Uuid::new_v4(), None).await,
         Err(Error::Capacity)
     ));
-    assert_eq!(view(storage.prepare(id).await.unwrap()).0, 0);
+    assert_eq!(view(storage.prepare(id, None).await.unwrap()).0, 0);
     for entry in 0..1024 {
         storage
             .ingest(message(entry, &"x".repeat(600)))

@@ -47,7 +47,7 @@ async fn frozen() -> (Router, Uuid) {
         storage.ingest(message(entry, text)).await.unwrap();
     }
     let snapshot = Uuid::new_v4();
-    let Snapshot::Ready { nodes, .. } = storage.prepare(snapshot).await.unwrap() else {
+    let Snapshot::Ready { nodes, .. } = storage.prepare(snapshot, None).await.unwrap() else {
         panic!("short messages are ready at once");
     };
     assert_eq!((nodes[0].start, nodes[0].length), (0, 4));

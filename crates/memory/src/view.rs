@@ -38,6 +38,19 @@ impl Budget {
         Ok(Self { target, trigger })
     }
 
+    /// Limits for a one-off view of at most `bytes`, for a harness that takes
+    /// less context than the live view uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidBudget`] if `bytes` cannot fit the empty `<chat>`
+    /// rendering.
+    pub fn at_most(bytes: usize) -> Result<Self, Error> {
+        // A one-off view batches straight to its target; the trigger only has to
+        // exceed it.
+        Self::new(bytes, bytes.saturating_add(1))
+    }
+
     /// The rendered byte size a triggered batch tries to reach.
     #[must_use]
     pub const fn target(self) -> usize {

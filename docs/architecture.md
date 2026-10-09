@@ -77,7 +77,11 @@ the one HTTP API, so the server never learns about any particular harness:
   the view, and runs again after `/clear` and compaction. Prompt, tool, and
   `Stop` hooks upload messages. A `PreToolUse` hook stamps the session's snapshot
   into `zoom` and `date` calls. Claude Code cannot remove earlier messages, so the
-  view is memory at session start rather than a per-turn replacement.
+  view is memory at session start rather than a per-turn replacement. It also
+  saves hook context over 10,000 characters to a file, so the adapter asks for a
+  view of about 9 KB (`?within=`): the gist's merge order with fewer lines per
+  level, close to the original rollback list. Prompt-cache stability does not
+  matter there, since each session loads the view once.
 - **Pi** (planned): its `context` hook can replace earlier messages with the view
   on every request, the gist's full design.
 

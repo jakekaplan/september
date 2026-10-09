@@ -52,7 +52,7 @@ struct Prepared {
     publication: Publication,
     token: Option<Uuid>,
     views: Views,
-    frozen: Vec<Frozen>,
+    frozen: Vec<(Uuid, Frozen)>,
 }
 
 impl InMemory {
@@ -129,14 +129,22 @@ impl Archive for InMemory {
         })
     }
 
-    async fn prepare(&self, id: Uuid) -> Result<Snapshot, Error> {
+    async fn prepare(&self, id: Uuid, within: Option<usize>) -> Result<Snapshot, Error> {
+        let within = within
+            .map(Budget::at_most)
+            .transpose()
+            .map_err(|_| Error::Invalid)?;
         let mut state = self.state.lock().await;
         let cutoff = u64::try_from(state.messages.len())
             .map_err(|error| Error::internal("assign archive cutoff", error))?;
         let State {
-            views, snapshots, ..
+            views,
+            snapshots,
+            summaries,
+            ..
         } = &mut *state;
-        snapshots.prepare(id, cutoff, views.live())
+        let built = |node| built(summaries, node);
+        snapshots.prepare(id, cutoff, within, views.live(), built)
     }
 
     async fn snapshot(&self, id: Uuid) -> Result<Snapshot, Error> {
@@ -271,12 +279,6 @@ impl State {
         })
     }
 
-    fn built(&self, node: Node) -> Option<Arc<str>> {
-        self.summaries
-            .get(&node)
-            .map(|published| Arc::clone(&published.text))
-    }
-
     /// The job's frozen context, or a new one if it fits; `None` means wait.
     fn context(&self, node: Node) -> Result<Option<Context>, Error> {
         if let Some(context) = self.contexts.get(&node) {
@@ -303,14 +305,17 @@ impl State {
         summary: september_memory::Summary,
         token: Option<Uuid>,
     ) -> Result<Prepared, Error> {
-        let publication = Publication::new(summary, |node| self.built(node));
+        let publication = Publication::new(summary, |node| built(&self.summaries, node));
+        let built = |node| {
+            publication
+                .text(node)
+                .or_else(|| built(&self.summaries, node))
+        };
         let mut views = self.views.clone();
-        let frozen = views
-            .advance(
-                |node| publication.text(node).or_else(|| self.built(node)),
-                |cutoff| self.snapshots.is_waiting(cutoff),
-            )
+        let reached = views
+            .advance(built, |cutoff| self.snapshots.is_waiting(cutoff))
             .map_err(|error| Error::internal("advance views", error))?;
+        let frozen = self.snapshots.freeze_waiting(&reached, built)?;
         Ok(Prepared {
             publication,
             token,
@@ -346,6 +351,13 @@ impl State {
         self.snapshots.make_ready(frozen);
         self.ready.extend(publication.job());
     }
+}
+
+/// Published text, or `None` for a range not yet built.
+fn built(summaries: &BTreeMap<Node, Published>, node: Node) -> Option<Arc<str>> {
+    summaries
+        .get(&node)
+        .map(|published| Arc::clone(&published.text))
 }
 
 #[cfg(test)]

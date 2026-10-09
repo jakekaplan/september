@@ -1,6 +1,8 @@
 use std::time::Duration;
 
+use axum::{body::Body, http::Request};
 use september_memory::SUMMARY_BYTES;
+use tower::ServiceExt;
 
 use crate::archive::Kind;
 
@@ -130,4 +132,74 @@ async fn completions_may_exceed_the_target_but_not_the_ceiling() {
         .await
         .unwrap();
     assert_eq!(summary(&storage, node(0, 1)).await, Some(oversized));
+}
+
+fn ranges(snapshot: &Snapshot) -> Vec<(u64, u64)> {
+    match snapshot {
+        Snapshot::Ready { nodes, .. } => nodes.iter().map(|n| (n.start, n.length)).collect(),
+        Snapshot::Pending { .. } => panic!("expected a ready snapshot"),
+    }
+}
+
+/// Eight short messages: every leaf and parent is built verbatim.
+async fn eight_notes() -> InMemory {
+    let storage = InMemory::default();
+    for entry in 0..8 {
+        storage
+            .ingest(message(entry, format!("note {entry}")))
+            .await
+            .unwrap();
+    }
+    storage
+}
+
+#[tokio::test]
+async fn a_sized_snapshot_merges_its_own_copy_and_leaves_the_live_view_alone() {
+    let storage = eight_notes().await;
+    let small = storage.prepare(Uuid::new_v4(), Some(40)).await.unwrap();
+    assert_eq!(ranges(&small), [(0, 8)]);
+    let full = storage.prepare(Uuid::new_v4(), None).await.unwrap();
+    assert_eq!(ranges(&full).len(), 8);
+}
+
+#[tokio::test]
+async fn a_waiting_sized_snapshot_is_frozen_at_its_own_size() {
+    let storage = eight_notes().await;
+    storage.ingest(message(8, "y".repeat(600))).await.unwrap();
+    let id = Uuid::new_v4();
+    assert!(matches!(
+        storage.prepare(id, Some(60)).await.unwrap(),
+        Snapshot::Pending { cutoff: 9, .. }
+    ));
+    let claim = storage.claim().await.unwrap().unwrap();
+    storage
+        .complete(Completion {
+            range: claim.job.range,
+            token: claim.token,
+            text: "short".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        ranges(&storage.snapshot(id).await.unwrap()),
+        [(0, 8), (8, 1)]
+    );
+}
+
+#[tokio::test]
+async fn http_rejects_a_size_too_small_for_any_view() {
+    let app = crate::router(Arc::new(eight_notes().await));
+    for (within, status) in [(5, 400), (200, 200)] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put(format!("/v1/snapshots/{}?within={within}", Uuid::new_v4()))
+                    .header("host", "localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
 }

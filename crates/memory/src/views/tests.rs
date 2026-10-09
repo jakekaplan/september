@@ -30,16 +30,13 @@ fn nodes(view: &View) -> Vec<Node> {
 }
 
 #[test]
-fn advance_appends_built_leaves_and_freezes_only_wanted_cutoffs() {
+fn advance_appends_built_leaves_and_returns_only_wanted_cutoffs() {
     let mut views = Views::new(Budget::CHAT, Budget::COMPACTION);
     let built = archive(3, false);
-    let frozen = views
+    let reached = views
         .advance(lookup(&built), |cutoff| cutoff == 0 || cutoff == 2)
         .unwrap();
-    assert_eq!(
-        frozen.iter().map(Snapshot::cutoff).collect::<Vec<_>>(),
-        [0, 2]
-    );
+    assert_eq!(reached.iter().map(View::cutoff).collect::<Vec<_>>(), [0, 2]);
     assert_eq!(views.live().cutoff(), 3);
 }
 

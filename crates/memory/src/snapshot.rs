@@ -1,4 +1,6 @@
-use crate::{Error, Node, Summary, View};
+use std::sync::Arc;
+
+use crate::{Budget, Error, Node, Summary, View};
 
 /// A ready interaction's fixed view and permitted tree navigation.
 ///
@@ -42,6 +44,26 @@ impl View {
             nodes: self.summaries().iter().map(Summary::node).collect(),
             rendered: self.render()?,
         })
+    }
+
+    /// Freeze a copy merged toward `budget` first, leaving this view unchanged.
+    ///
+    /// Merges follow the usual order but use only built parents, as for
+    /// [`View::compact`], so the copy can stay above `budget` while parents are
+    /// unbuilt. The copy covers the same messages, just in fewer, coarser lines.
+    ///
+    /// # Errors
+    ///
+    /// As for [`View::freeze`].
+    pub fn freeze_within(
+        &self,
+        expected_cutoff: u64,
+        budget: Budget,
+        built: impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<Snapshot, Error> {
+        let mut copy = self.clone();
+        copy.resize(budget, built)?;
+        copy.freeze(expected_cutoff)
     }
 }
 
@@ -90,8 +112,6 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
-    use crate::Budget;
-
     use super::*;
 
     fn node(start: u64, length: u64) -> Node {
@@ -152,6 +172,43 @@ mod tests {
         assert_eq!(
             snapshot.zoom(node(0, 1)),
             Err(Error::OutsideSnapshot(node(0, 1)))
+        );
+    }
+
+    fn four_leaves() -> View {
+        let mut view = View::new(Budget::CHAT);
+        for id in 0..4 {
+            view.append(Summary::new(node(id, 1), "0123456789"), |_| None)
+                .unwrap();
+        }
+        view
+    }
+
+    #[test]
+    fn a_sized_freeze_merges_a_copy_through_built_parents() {
+        let view = four_leaves();
+        let built = |node: Node| (node.length() > 1).then(|| Arc::from("p"));
+        let small = view
+            .freeze_within(4, Budget::at_most(20).unwrap(), built)
+            .unwrap();
+        assert_eq!(small.nodes(), &[node(0, 4)]);
+        assert_eq!(small.render(), "<chat>\n0+4|p\n</chat>");
+        // The live view keeps its own lines.
+        assert_eq!(view.summaries().len(), 4);
+    }
+
+    #[test]
+    fn a_sized_freeze_stays_larger_while_parents_are_unbuilt() {
+        let small = four_leaves()
+            .freeze_within(4, Budget::at_most(30).unwrap(), |_| None)
+            .unwrap();
+        assert_eq!(small.nodes().len(), 4);
+        assert_eq!(
+            Budget::at_most(5),
+            Err(Error::InvalidBudget {
+                target: 5,
+                trigger: 6
+            })
         );
     }
 

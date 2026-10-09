@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{Budget, Error, Node, Snapshot, Summary, View};
+use crate::{Budget, Error, Node, Summary, View};
 
 /// The live view and the smaller compaction view that gives summary jobs context.
 ///
@@ -32,8 +32,8 @@ impl Views {
     /// Append every built leaf after the live cutoff, advancing both batches.
     ///
     /// `built` returns completed text, or `None` for a range not yet built, as for
-    /// [`View::compact`]. The live view is frozen at each cutoff it reaches that
-    /// `wanted` asks for, including its starting one.
+    /// [`View::compact`]. Returns a copy of the live view at each cutoff it reaches
+    /// that `wanted` asks for, including its starting one, for freezing.
     ///
     /// # Errors
     ///
@@ -43,11 +43,11 @@ impl Views {
         &mut self,
         built: impl Fn(Node) -> Option<Arc<str>>,
         wanted: impl Fn(u64) -> bool,
-    ) -> Result<Vec<Snapshot>, Error> {
+    ) -> Result<Vec<View>, Error> {
         let mut next = self.clone();
-        let frozen = next.extend(&built, &wanted)?;
+        let reached = next.extend(&built, &wanted)?;
         *self = next;
-        Ok(frozen)
+        Ok(reached)
     }
 
     /// The compaction-view prefix that gives context to building `node`.
@@ -78,15 +78,15 @@ impl Views {
         &mut self,
         built: &impl Fn(Node) -> Option<Arc<str>>,
         wanted: &impl Fn(u64) -> bool,
-    ) -> Result<Vec<Snapshot>, Error> {
+    ) -> Result<Vec<View>, Error> {
         // A new parent can resume an unfinished batch before any leaf arrives.
         let merges = self.live.compact(built)?;
         self.follow(merges, None, built)?;
-        let mut frozen = Vec::new();
+        let mut reached = Vec::new();
         loop {
             let cutoff = self.live.cutoff();
             if wanted(cutoff) {
-                frozen.push(self.live.freeze(cutoff)?);
+                reached.push(self.live.clone());
             }
             let leaf = Node::new(cutoff, 1)?;
             let Some(text) = built(leaf) else { break };
@@ -94,7 +94,7 @@ impl Views {
             let merges = self.live.append(leaf.clone(), built)?;
             self.follow(merges, Some(leaf), built)?;
         }
-        Ok(frozen)
+        Ok(reached)
     }
 
     fn follow(
