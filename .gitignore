@@ -1,0 +1,23 @@
+# Rust artifacts
+/target/
+**/*.rs.bk
+
+# Local secrets and environments
+.env
+.env.*
+!.env.example
+.direnv/
+.venv/
+
+# Local service data and logs
+/data/
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# File-size checker cache
+.loq_cache

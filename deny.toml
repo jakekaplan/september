@@ -1,0 +1,72 @@
+[graph]
+all-features = true
+
+[advisories]
+# Reviewed 2026-10-09: genai 0.6.5 uses paste 1.0.15 only to concatenate
+# fixed adapter type names at compile time (adapter/dispatcher_macros.rs).
+# RUSTSEC-2024-0436 reports unmaintained status, not a known vulnerability;
+# no archive/model data reaches this macro. Keep the locked stable genai release
+# and revisit this exception when upgrading it. Other advisories remain enforced.
+ignore = ["RUSTSEC-2024-0436"]
+
+[licenses]
+# Axum/Tokio/Serde and their runtime dependencies use MIT or Apache-2.0.
+# matchit additionally requires BSD-3-Clause; unicode-ident requires Unicode-3.0.
+# These allowances cover the service's actual dependency graph, not advisories.
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0"]
+
+# Neither internal crate is published. The project's own license is not chosen
+# yet; this exemption does not skip license checks for external dependencies.
+[licenses.private]
+ignore = true
+
+# Docket 0.2's Redis dependency enables these runtime dependencies even in memory
+# mode. Reviewed their bundled license texts: ISC and Boost permit redistribution
+# with the applicable notices retained; the trust-root data's CDLA requires its
+# agreement to accompany shared data. Scope allowances to the reviewed releases.
+[[licenses.exceptions]]
+name = "rustls-webpki"
+version = "=0.103.15"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "untrusted"
+version = "=0.9.0"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "webpki-roots"
+version = "=1.0.9"
+allow = ["CDLA-Permissive-2.0"]
+
+[[licenses.exceptions]]
+name = "xxhash-rust"
+version = "=0.8.19"
+allow = ["BSL-1.0"]
+
+# Reqwest's rustls transport adds AWS-LC and platform trust-root data. Reviewed
+# the bundled LICENSE files: ISC permits redistribution with notices retained;
+# CDLA requires its agreement with redistributed data, as for webpki-roots above.
+# Existing Apache-2.0/MIT/BSD permissions cover the remaining AWS-LC terms.
+[[licenses.exceptions]]
+name = "aws-lc-rs"
+version = "=1.18.1"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "aws-lc-sys"
+version = "=0.45.0"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "webpki-root-certs"
+version = "=1.0.9"
+allow = ["CDLA-Permissive-2.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Rust formatting
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: loq
+        name: File-size limits
+        entry: uv tool run --from loq>=0.1.0 loq check
+        language: system
+        types: [text]

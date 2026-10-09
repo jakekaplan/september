@@ -1,0 +1,30 @@
+[package]
+name = "september"
+description = "Hosted memory service operations and I/O for September"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+config = { version = ">=0.15.27", default-features = false, features = ["toml"] }
+genai = { version = ">=0.6.5", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = ">=0.13.5", default-features = false, features = ["rustls"] }
+docket-rs = { version = ">=0.2.0", default-features = false, features = ["memory"] }
+september-memory = { version = ">=0.1.0", path = "../memory" }
+axum = { version = ">=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+hyper = { version = ">=1.12.0", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = ">=0.1.21", default-features = false, features = ["tokio", "service"] }
+tokio = { version = ">=1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+serde = { version = ">=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = ">=1.0.151", default-features = false, features = ["std"] }
+uuid = { version = ">=1.27.0", default-features = false, features = ["v4", "serde", "std"] }
+tracing = { version = ">=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = ">=0.3.23", default-features = false, features = ["fmt", "ansi"] }
+
+[dev-dependencies]
+tower = { version = ">=0.5.3", default-features = false, features = ["util"] }
+tokio = { version = ">=1.53.2", default-features = false, features = ["test-util", "io-util"] }
+
+[lints]
+workspace = true
