@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 config = { version = ">=0.15.27", default-features = false, features = ["toml"] }
-genai = { version = ">=0.6.5", default-features = false, features = ["rustls-tls"] }
+genai = { version = ">=0.7.0-rc.4", default-features = false, features = ["rustls-tls"] }
 reqwest = { version = ">=0.13.5", default-features = false, features = ["rustls"] }
 docket-rs = { version = ">=0.2.0", default-features = false, features = ["memory"] }
 september-memory = { path = "../memory" }

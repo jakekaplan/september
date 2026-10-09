@@ -23,7 +23,8 @@ use crate::{
 
 const DISPATCH_EVERY: Duration = Duration::from_millis(250);
 const RENEWALS_PER_LEASE: u32 = 3;
-const SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
+// Five thinking attempts at a stubborn summary can each take most of a minute.
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(300);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// Claims ready jobs and adds a [`Summarize`] task for each.

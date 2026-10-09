@@ -5,7 +5,10 @@ use std::time::Duration;
 use genai::{
     Client, ModelIden, ServiceTarget,
     adapter::AdapterKind,
-    chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, StopReason},
+    chat::{
+        ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, ReasoningEffort,
+        StopReason,
+    },
     resolver::{AuthData, Endpoint},
 };
 use september_memory::{Node, SUMMARY_BYTES, Summary};
@@ -17,6 +20,8 @@ use crate::{
 };
 
 const ATTEMPTS: usize = 5;
+// Room for xhigh thinking before the one-line answer; a cut-off reply is rejected.
+const MAX_TOKENS: u32 = 32_000;
 // The compaction half of the gist's system prompt, with the harness's kinds.
 const PROMPT: &str = "\
 You write an AI agent's memory: one step of a binary tree over its whole chat, \
@@ -126,7 +131,10 @@ impl Summarizer {
             .build()
             .map_err(|_| Failure::Transport)?;
         Ok(Self {
-            client: Client::builder().with_reqwest(transport).build(),
+            client: Client::builder()
+                .with_reqwest(transport)
+                .build()
+                .map_err(|_| Failure::Transport)?,
             target: ServiceTarget {
                 endpoint: Endpoint::from_static(endpoint),
                 auth: AuthData::from_single(api_key),
@@ -149,9 +157,11 @@ impl Summarizer {
         let mut request = ChatRequest::new(vec![ChatMessage::user(task)])
             .with_system(PROMPT)
             .with_store(false);
+        // As in the gist, a cheap model thinks at xhigh effort before each line.
         // Keep the wire response only long enough to reject content the adapter skips.
         let options = ChatOptions::default()
-            .with_max_tokens(2048)
+            .with_max_tokens(MAX_TOKENS)
+            .with_reasoning_effort(ReasoningEffort::XHigh)
             .with_capture_raw_body(true);
         let mut shortest: Option<String> = None;
         for _ in 0..ATTEMPTS {

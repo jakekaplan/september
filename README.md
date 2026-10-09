@@ -38,6 +38,7 @@ export ANTHROPIC_API_KEY=...
 SEPTEMBER_STORAGE=sqlite://data/september.sqlite3 \
 SEPTEMBER_SUMMARIZER=anthropic SEPTEMBER_MODEL=claude-haiku-5-5 \
 cargo run --locked -p september
+# Or SEPTEMBER_SUMMARIZER=openai SEPTEMBER_MODEL=gpt-6-luna with OPENAI_API_KEY.
 ```
 
 Without a summarizer, any message over 512 bytes stays unsummarized and the
@@ -80,9 +81,9 @@ API keys come only from `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
 This section is the single statement of what is implemented.
 
 - **Works:** archiving, the summary tree and views, snapshots, and zoom, over
-  HTTP and MCP; SQLite storage in memory or in a file; background summaries with
-  Anthropic (tested live with Haiku) or OpenAI (untested live); the Claude Code
-  plugin.
+  HTTP and MCP; SQLite storage in memory or in a file; background summaries at
+  xhigh reasoning effort, as in the gist, with Anthropic (tested live with Haiku)
+  or OpenAI (untested live); the Claude Code plugin.
 - **Untested:** a Redis queue.
 - **Not built:** authentication and hosting, Postgres, a Pi adapter, a CLI.
 - **Open:** summary quality is only spot-checked so far.

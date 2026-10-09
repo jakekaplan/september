@@ -158,12 +158,13 @@ async fn both_providers_receive_provenance_and_context_and_return_only_final_tex
                 assert_eq!(uri.path(), "/v1/responses");
                 assert_eq!(headers["authorization"], "Bearer test-key");
                 assert_eq!(body["store"], false);
-                assert_eq!(body["max_output_tokens"], 2048);
+                assert_eq!(body["max_output_tokens"], 32_000);
+                assert_eq!(body["reasoning"]["effort"], "xhigh");
             }
             Provider::Anthropic => {
                 assert_eq!(uri.path(), "/v1/messages");
                 assert_eq!(headers["x-api-key"], "test-key");
-                assert_eq!(body["max_tokens"], 2048);
+                assert_eq!(body["max_tokens"], 32_000);
             }
         }
     }

@@ -128,9 +128,12 @@ never reaches Docket lapses and is claimed again.
 
 The intended starting model is GPT-6 Luna, selected explicitly with
 `SEPTEMBER_SUMMARIZER=openai` and `SEPTEMBER_MODEL=gpt-6-luna`. Anthropic is also
-supported with its own model and `ANTHROPIC_API_KEY`. A client's Codex or other
-harness login is never used. Live model access and summary quality still need
-validation.
+supported with its own model and `ANTHROPIC_API_KEY`. As in the gist, every
+summary call asks for xhigh reasoning effort; UniiChat runs Claude Haiku that way.
+Thinking makes each summary slower, so a summary task may run five minutes. A
+client's Codex or other harness login is never used. Summary quality has only
+been spot-checked: with Haiku 5.5, a reply's summary sometimes still borrows an
+earlier message from its context.
 
 Hosted model calls need timeouts, bounded retries, and recorded usage. The local
 worker has timeouts and retries per claim, but no usage ledger or spend cap.
