@@ -1,148 +1,105 @@
 # September
 
+[![CI](https://github.com/jakekaplan/september/actions/workflows/ci.yml/badge.svg)](https://github.com/jakekaplan/september/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 *Do you remember... the 21st night...*
 
-A planned hosted conversation-memory service for AI agents, independent of their
-harness. Pi, Claude, custom agents, and command-line clients can contribute to one
-archive and retrieve older details through a summary tree.
+Long-term memory for AI agents. September keeps every message your agents
+exchange, compresses the history into a small view that fits in context, and
+lets the agent zoom back into any part of it, down to the original words. One
+memory is shared by every harness and session.
 
-The design follows [UniiChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449)
-and [OptMem](https://github.com/VictorTaelin/OptMem): every message is archived
-word for word, a background model compresses the archive into a binary tree of
-512-byte summaries, and each interaction sees a bounded, chronological view in
-which recent lines are fine and old lines coarse. Any line can be zoomed back
-down to the original message.
+It follows Victor Taelin's [UniiChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449)
+and [OptMem](https://github.com/VictorTaelin/OptMem) design.
 
-## Status
+## How it works
 
-This README is the single statement of what is implemented.
+- Every message is archived word for word.
+- A model summarizes the archive into a binary tree of one-line summaries, each
+  at most 512 bytes. Two neighbouring lines merge into one as they age.
+- Each session starts with a view of the whole history: recent messages one per
+  line, older work in fewer, coarser lines.
+- The agent calls `zoom` to open any line into the two lines it was made from,
+  and on down to the original message.
 
-- **Memory core** (`september-memory`): every rule that doesn't depend on
-  storage. That covers aligned ranges, batched views with the gist's merge
-  order and 64–128 KB sawtooth, the 16–32 KB compaction view that follows the
-  live view, job context, joining short pairs verbatim, saved-view restoration,
-  and frozen snapshots that zoom only into their own cover.
-- **Local service** (`september`): deduplicated ingestion, fixed-cutoff
-  snapshots, zoom to originals, and fenced summary claims. Clients use the
-  `Archive` trait and workers use the `Jobs` trait, so a backend only stores
-  state and calls the core.
-- **Storage**: SQLite, in memory by default, where acknowledgments are volatile
-  and restarting loses all data; or in a file
-  (`SEPTEMBER_STORAGE=sqlite://data/september.sqlite3`), which commits before
-  acknowledging and keeps the archive, views, snapshots, and jobs across
-  restarts. One server process holds the file.
-- **Worker**: opt-in Docket worker summarizing with OpenAI or Anthropic. Its
-  queue is `SEPTEMBER_QUEUE`, in process by default; a `redis://` URL is
-  accepted but untested.
-- **Retrieval**: an MCP endpoint at `/mcp` with the gist's `zoom` and `date`
-  tools, each bound to the interaction's frozen snapshot.
-- **Claude Code plugin** (`adapters/claude-code`): captures each session and
-  loads the memory view at session start, after `/clear`, and after compaction.
-- **Not implemented**: shared Postgres storage, authentication, a Pi adapter,
-  and a CLI. Live summary quality is unvalidated.
-
-## Run locally
+## Quick start
 
 ```sh
 cargo run --locked -p september
 ```
 
-The server listens on `127.0.0.1:3000`. Non-loopback binds are rejected until
-authentication exists. The [HTTP walkthrough](docs/http.md) uploads a message,
-freezes an interaction, and zooms to the original.
-
-By default no summarizer runs, and long messages wait for an external worker to
-claim and complete them over HTTP. To summarize continuously, choose a provider
-and model and set that provider's standalone API key:
+The server listens on `127.0.0.1:3000` and keeps everything in memory. To keep
+memory across restarts and summarize long messages, give it a database file and
+a model:
 
 ```sh
-SEPTEMBER_SUMMARIZER=openai SEPTEMBER_MODEL=gpt-6-luna cargo run --locked -p september
-# Or SEPTEMBER_SUMMARIZER=anthropic with a Claude model and ANTHROPIC_API_KEY.
+export ANTHROPIC_API_KEY=...
+SEPTEMBER_STORAGE=sqlite://data/september.sqlite3 \
+SEPTEMBER_SUMMARIZER=anthropic SEPTEMBER_MODEL=claude-haiku-5-5 \
+cargo run --locked -p september
 ```
 
-Settings come from defaults, then an optional TOML file named by
-`SEPTEMBER_CONFIG`, then `SEPTEMBER_*` environment variables. Unknown settings,
-a missing model or key, or a missing explicit file fail startup. API keys are
-read only from `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; harness logins are never
-used, and `.env` files are not loaded.
-
-```toml
-bind = "127.0.0.1:3000"
-summarizer = "openai"
-model = "gpt-6-luna"
-queue = "memory://september"
-storage = "sqlite://data/september.sqlite3"   # or "memory", the default
-```
+Without a summarizer, any message over 512 bytes stays unsummarized and the
+view waits for it. The [HTTP walkthrough](docs/http.md) shows the API by hand.
 
 ## Use with Claude Code
 
-Install the plugin once from this repository, with the server running:
+With the server running, install the plugin once:
 
 ```sh
 claude plugin marketplace add ./adapters
 claude plugin install september@september
 ```
 
-Then start `claude` as usual. Hooks upload each prompt, tool call, tool result,
-and final reply, and load the memory view when a session starts, after `/clear`,
-and after compaction. Claude reaches older detail through the plugin's `zoom` and
-`date` tools; a hook fills in the session's snapshot, so the model never handles
-it. Set `SEPTEMBER_URL` if the server is not at `http://127.0.0.1:3000`.
+Then use `claude` as usual. The plugin archives each prompt, tool call, tool
+result and reply, loads the memory view when a session starts (and after
+`/clear` or compaction), and gives Claude `zoom` and `date` tools. Set
+`SEPTEMBER_URL` if the server is not at `http://127.0.0.1:3000`.
 
-Claude Code shows at most 10,000 characters of hook context, so the plugin asks
-for a view of about 9 KB: the same history in about 20 lines, with old work in
-large lines and recent work line by line. Claude zooms into a line for detail.
-Merging down needs summaries of older ranges, so run a summarizer.
+Current limits: uploads are best effort, so messages sent while the server is
+down are lost; text between tool calls and subagent work are not captured yet.
 
-Claude Code cannot remove earlier messages, so within one long session its own
-history still grows until it compacts; each new session starts with everything
-from every harness. Uploads are best effort: if the server is down, those
-messages are not archived. Assistant text between tool calls and subagent work
-are not captured yet. Without a summarizer, long messages keep the view pending.
+## Settings
 
-## How summaries are built
+Defaults, then an optional TOML file named by `SEPTEMBER_CONFIG`, then
+environment variables:
 
-A message that fits in 512 bytes as a tagged line, such as `user: ...`, is its
-own summary. Two children that fit in 512 bytes together are joined by a
-newline. Only the rest become jobs.
+| Setting      | Variable               | Default              | Values                                 |
+| ------------ | ---------------------- | -------------------- | -------------------------------------- |
+| `bind`       | `SEPTEMBER_BIND`       | `127.0.0.1:3000`     | a loopback address                     |
+| `storage`    | `SEPTEMBER_STORAGE`    | `memory`             | `memory` or `sqlite://<path>`          |
+| `summarizer` | `SEPTEMBER_SUMMARIZER` | `none`               | `none`, `anthropic` or `openai`        |
+| `model`      | `SEPTEMBER_MODEL`      |                      | required with a summarizer             |
+| `queue`      | `SEPTEMBER_QUEUE`      | `memory://september` | in process, or a `redis://` URL        |
 
-The worker uses the gist's compaction call. The job's frozen `<chat>` context
-comes first. Then comes the task, with a 512-dash ruler showing the size. A
-draft over the limit gets the gist's "Too long" reply, which shows where the
-limit cuts it. After five attempts the shortest draft is kept: the view measures
-real sizes. Storage accepts summaries up to 1,024 bytes, and the summarizer cuts
-a draft at that ceiling if it is still longer. One stubborn summary can
-therefore never stall memory.
+API keys come only from `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
 
-Docket runs the background work. A perpetual dispatch task claims ready jobs
-from storage, which caps active claims at eight. It adds one summary task per
-claim. Each task renews its 60-second claim every 20 seconds while the model
-runs, and Docket retries a failed attempt three times. If every attempt fails,
-the claim lapses and the job becomes claimable again. Storage stays
-authoritative for readiness, fencing, and publication.
+## Status
 
-## Repository
+This section is the single statement of what is implemented.
+
+- **Works:** archiving, the summary tree and views, snapshots, and zoom, over
+  HTTP and MCP; SQLite storage in memory or in a file; background summaries with
+  Anthropic (tested live with Haiku) or OpenAI (untested live); the Claude Code
+  plugin.
+- **Untested:** a Redis queue.
+- **Not built:** authentication and hosting, Postgres, a Pi adapter, a CLI.
+- **Open:** summary quality is only spot-checked so far.
+
+## Development
 
 ```text
-crates/memory/   september-memory: deterministic memory rules, no I/O
-crates/service/  september: HTTP and MCP server, storage, summarizer, worker
+crates/memory/   september-memory: the memory rules, no I/O
+crates/service/  september: server, storage, summarizer, worker
 adapters/        harness plugins; claude-code is standard-library Python
 ```
 
-Install [rustup](https://rustup.rs/) and [uv](https://docs.astral.sh/uv/); the
-repository selects Rust 1.99 with Clippy and rustfmt. Focused checks, hooks, and
-dependency policy are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-- [Architecture](docs/architecture.md): the hosted design, memory rules, and open
-  decisions.
-- [HTTP contract](docs/http.md): routes, schemas, and limits.
-- [Rust references](docs/references.md): what to learn from Ruff, Vector, Axum,
-  SQLx, and the official MCP SDK.
-- [Agent guidance](AGENTS.md) and [security policy](SECURITY.md).
-
-CI checks formatting, Clippy, file sizes, tests, rustdoc, and dependency policy.
-There is no coverage quota. Both crates are unpublished.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks,
+[architecture](docs/architecture.md) for the design and how summaries are built,
+the [HTTP contract](docs/http.md), [AGENTS.md](AGENTS.md), and
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)
