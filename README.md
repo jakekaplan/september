@@ -54,12 +54,12 @@ claude plugin install september@september
 ```
 
 Then use `claude` as usual. The plugin archives each prompt, tool call, tool
-result and reply, loads the memory view when a session starts (and after
+result and everything Claude writes, loads the memory view when a session starts (and after
 `/clear` or compaction), and gives Claude `zoom` and `date` tools. Set
 `SEPTEMBER_URL` if the server is not at `http://127.0.0.1:3000`.
 
 Current limits: uploads are best effort, so messages sent while the server is
-down are lost; text between tool calls and subagent work are not captured yet.
+down are lost; subagent work is not captured yet.
 
 ## Settings
 

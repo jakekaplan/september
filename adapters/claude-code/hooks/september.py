@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ MAX_TEXT_BYTES = 65_536
 # The gist clips tool output to its head and tail, this many characters in all.
 TOOL_OUTPUT_CHARS = 30_000
 READY_WAIT_SECONDS = 20.0
+# Claude Code writes the final reply to the transcript just after Stop fires.
+REPLY_WAIT_SECONDS = 3.0
 
 MEMORY_GUIDE = """\
 September memory: the whole chat across your sessions and tools, oldest first, \
@@ -62,10 +65,11 @@ def message(
     entry: str,
     text: str,
     call_id: str | None = None,
+    timestamp_ms: int | None = None,
 ) -> list[dict[str, Any]]:
     """One September message per part of `text`, with the session's provenance."""
     project, branch = provenance(event.get("cwd") or os.getcwd())
-    now = int(time.time() * 1000)
+    now = int(time.time() * 1000) if timestamp_ms is None else timestamp_ms
     return [
         {
             "source": {
@@ -103,13 +107,44 @@ def tool_messages(event: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def reply_messages(event: dict[str, Any]) -> list[dict[str, Any]]:
-    text = event.get("last_assistant_message") or ""
-    if not text.strip():
-        return []
-    # A repeated Stop for the same reply is a duplicate, not a conflict.
-    entry = f"{event.get('prompt_id') or 'none'}:reply:{digest(text)}"
-    return message(event, "assistant", entry, text)
+def reply_messages(event: dict[str, Any], entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Claude's text in transcript `entries`, including text between tool calls.
+
+    Each text block keeps its transcript identity and time, so a block read twice
+    is a duplicate. Subagent, error, and synthetic entries are not Claude's reply.
+    """
+    messages = []
+    for entry in entries:
+        body = entry.get("message") or {}
+        content = body.get("content")
+        if (
+            entry.get("type") != "assistant"
+            or entry.get("isSidechain")
+            or entry.get("isApiErrorMessage")
+            or body.get("model") == "<synthetic>"
+            or not entry.get("uuid")
+            or not isinstance(content, list)
+        ):
+            continue
+        written = transcript_time(entry.get("timestamp"))
+        for index, block in enumerate(content):
+            text = block.get("text") if block.get("type") == "text" else None
+            if text and text.strip():
+                key = f"{entry['uuid']}:{index}"
+                messages += message(event, "assistant", key, text, timestamp_ms=written)
+    return messages
+
+
+def transcript_time(stamp: Any) -> int | None:
+    """Milliseconds for a transcript timestamp such as `2026-10-09T17:42:31.518Z`."""
+    if not isinstance(stamp, str):
+        return None
+    try:
+        # Python 3.9's parser does not accept a trailing Z.
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(parsed.timestamp() * 1000)
 
 
 def as_text(value: Any) -> str:
@@ -184,13 +219,17 @@ def request(method: str, path: str, body: Any = None) -> tuple[int, Any]:
         return error.code, None
 
 
-def upload(messages: list[dict[str, Any]]) -> None:
+def upload(messages: list[dict[str, Any]]) -> bool:
+    """Archive each message in order; whether all of them are archived."""
+    archived = True
     for item in messages:
         status, _ = request("POST", "/v1/messages", item)
         # Entries are stable per event, so a conflict is an earlier upload of the
         # same event with another timestamp: it is already archived.
         if status not in (200, 201, 409):
             warn(f"September rejected a {item['kind']} message with HTTP {status}")
+            archived = False
+    return archived
 
 
 def ready_snapshot(snapshot: str) -> dict[str, Any] | None:
@@ -203,7 +242,8 @@ def ready_snapshot(snapshot: str) -> dict[str, Any] | None:
     return body if status == 200 else None
 
 
-# Remembering each session's snapshot for the zoom stamp.
+# Each session's state: its snapshot for the zoom stamp, and how much of its
+# transcript has been archived.
 
 
 def state_file(session_id: str) -> Path:
@@ -213,17 +253,68 @@ def state_file(session_id: str) -> Path:
     return Path(data) / "sessions" / f"{name}.json"
 
 
-def remember(session_id: str, snapshot: str) -> None:
+def load_state(session_id: str) -> dict[str, Any]:
+    try:
+        state = json.loads(state_file(session_id).read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def save_state(session_id: str, state: dict[str, Any]) -> None:
     path = state_file(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"snapshot": snapshot}))
+    # Hooks for parallel tool calls run at once; never leave a half-written file.
+    partial = path.with_suffix(f".{os.getpid()}.tmp")
+    partial.write_text(json.dumps(state))
+    os.replace(partial, path)
 
 
-def recall(session_id: str) -> str | None:
+def read_transcript(path: str | None, start: int) -> tuple[list[dict[str, Any]], int]:
+    """The complete transcript entries after byte `start`, and where they end."""
+    if not path:
+        return [], start
     try:
-        return json.loads(state_file(session_id).read_text())["snapshot"]
-    except (OSError, ValueError, KeyError):
-        return None
+        transcript = open(path, "rb")
+    except FileNotFoundError:
+        # A new session's first prompt arrives before its transcript exists.
+        return [], start
+    with transcript:
+        if start > os.fstat(transcript.fileno()).st_size:
+            start = 0  # A different, shorter file: read it from the beginning.
+        transcript.seek(start)
+        data = transcript.read()
+    # Claude Code may still be writing the last line; leave it for next time.
+    complete = data.rfind(b"\n") + 1
+    entries = []
+    for line in data[:complete].splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries, start + complete
+
+
+def upload_replies(event: dict[str, Any], final: str = "") -> None:
+    """Archive Claude's text written since the last upload, in transcript order.
+
+    With the turn's `final` reply, wait briefly for the transcript to hold it. A
+    reply that still is not there is archived by the next prompt or session end.
+    """
+    session = event["session_id"]
+    start = load_state(session).get("transcript_read", 0)
+    deadline = time.monotonic() + REPLY_WAIT_SECONDS
+    while True:
+        entries, end = read_transcript(event.get("transcript_path"), start)
+        replies = reply_messages(event, entries)
+        written = any(final.rstrip().endswith(reply["text"].rstrip()) for reply in replies)
+        if not final.strip() or written or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    if upload(replies):
+        save_state(session, {**load_state(session), "transcript_read": end})
 
 
 # Hook handlers.
@@ -231,14 +322,19 @@ def recall(session_id: str) -> str | None:
 
 def session_start(event: dict[str, Any]) -> dict[str, Any]:
     snapshot = str(uuid.uuid4())
-    remember(event["session_id"], snapshot)
+    state = {**load_state(event["session_id"]), "snapshot": snapshot}
+    # A resumed transcript's earlier text was archived when it was written.
+    if "transcript_read" not in state:
+        path = event.get("transcript_path")
+        state["transcript_read"] = os.path.getsize(path) if path and os.path.exists(path) else 0
+    save_state(event["session_id"], state)
     ready = ready_snapshot(snapshot)
     context = f"{MEMORY_GUIDE}\n\n{ready['view']}" if ready else UNREADY_GUIDE
     return hook_output("SessionStart", additionalContext=context)
 
 
 def stamp(event: dict[str, Any]) -> dict[str, Any] | None:
-    snapshot = recall(event["session_id"])
+    snapshot = load_state(event["session_id"]).get("snapshot")
     if snapshot is None:
         return None
     arguments = {**(event.get("tool_input") or {}), "snapshot": snapshot}
@@ -253,11 +349,24 @@ def warn(text: str) -> None:
     print(f"september: {text}", file=sys.stderr)
 
 
+def prompt(event: dict[str, Any]) -> None:
+    # A reply the transcript did not yet hold at Stop comes before the new prompt.
+    upload_replies(event)
+    upload(prompt_messages(event))
+
+
+def tool(event: dict[str, Any]) -> None:
+    # Text Claude wrote before this call comes first, keeping the archive in order.
+    upload_replies(event)
+    upload(tool_messages(event))
+
+
 HANDLERS = {
     "session-start": session_start,
-    "prompt": lambda event: upload(prompt_messages(event)),
-    "tool": lambda event: upload(tool_messages(event)),
-    "reply": lambda event: upload(reply_messages(event)),
+    "prompt": prompt,
+    "tool": tool,
+    "reply": lambda event: upload_replies(event, event.get("last_assistant_message") or ""),
+    "session-end": upload_replies,
     "stamp": stamp,
 }
 

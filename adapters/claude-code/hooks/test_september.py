@@ -1,5 +1,6 @@
 """Translation from Claude Code hook events to September messages."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -48,14 +49,25 @@ class Translation(unittest.TestCase):
         event = {**self.event, "tool_name": "mcp__plugin_september_september__zoom"}
         self.assertEqual(september.tool_messages(event), [])
 
-    def test_a_repeated_reply_keeps_its_entry_and_a_new_one_does_not(self) -> None:
-        def entry(text: str) -> str:
-            event = {**self.event, "last_assistant_message": text}
-            return september.reply_messages(event)[0]["source"]["entry"]
-
-        self.assertEqual(entry("done"), entry("done"))
-        self.assertNotEqual(entry("done"), entry("done again"))
-        self.assertEqual(september.reply_messages({**self.event, "last_assistant_message": " "}), [])
+    def test_replies_are_claudes_text_blocks_with_transcript_identity_and_time(self) -> None:
+        entries = [
+            assistant("a-1", {"type": "thinking", "thinking": "private"}),
+            assistant("a-2", {"type": "text", "text": "Checking the plugin first."}),
+            assistant("a-3", {"type": "tool_use", "name": "Bash", "input": {}}),
+            {"type": "user", "uuid": "u-1", "message": {"content": [{"type": "tool_result"}]}},
+            assistant("a-4", {"type": "text", "text": "Subagent work."}, isSidechain=True),
+            assistant("a-5", {"type": "text", "text": "No response requested."}, model="<synthetic>"),
+            assistant("a-6", {"type": "text", "text": "Done: it works."}),
+        ]
+        replies = september.reply_messages(self.event, entries)
+        self.assertEqual(
+            [(r["source"]["entry"], r["kind"], r["text"]) for r in replies],
+            [
+                ("a-2:0", "assistant", "Checking the plugin first."),
+                ("a-6:0", "assistant", "Done: it works."),
+            ],
+        )
+        self.assertEqual(replies[0]["timestamp_ms"], 1791567751518)
 
     def test_long_text_splits_into_numbered_parts_without_losing_bytes(self) -> None:
         text = "é" * 40_000
@@ -65,6 +77,93 @@ class Translation(unittest.TestCase):
         self.assertEqual("".join(parts), text)
         messages = september.prompt_messages({**self.event, "prompt": text})
         self.assertEqual([m["source"]["part"] for m in messages], [0, 1])
+
+
+def assistant(uuid: str, block: dict, model: str = "claude-opus-5-5", **fields: object) -> dict:
+    return {
+        "type": "assistant",
+        "uuid": uuid,
+        "timestamp": "2026-10-09T17:42:31.518Z",
+        "message": {"model": model, "content": [block]},
+        **fields,
+    }
+
+
+class Transcript(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        patch = mock.patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": folder.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.path = Path(folder.name) / "transcript.jsonl"
+        self.event = {"session_id": "s-1", "cwd": folder.name, "transcript_path": str(self.path)}
+
+    def write(self, *entries: dict, partial: str = "") -> None:
+        with self.path.open("a") as transcript:
+            for entry in entries:
+                transcript.write(json.dumps(entry) + "\n")
+            transcript.write(partial)
+
+    def uploaded(self, status: int = 201) -> list[str]:
+        sent = []
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, object]:
+            sent.append(body["text"])
+            return status, None
+
+        with mock.patch.object(september, "request", request):
+            september.upload_replies(self.event)
+        return sent
+
+    def test_each_upload_reads_on_from_where_the_last_one_ended(self) -> None:
+        self.write(assistant("a-1", {"type": "text", "text": "first"}), partial='{"type": "assis')
+        self.assertEqual(self.uploaded(), ["first"])
+        self.assertEqual(self.uploaded(), [])
+        with self.path.open("a") as transcript:
+            transcript.write('tant"}\n')
+        self.write(assistant("a-2", {"type": "text", "text": "second"}))
+        self.assertEqual(self.uploaded(), ["second"])
+
+    def test_text_is_read_again_until_the_server_archives_it(self) -> None:
+        self.write(assistant("a-1", {"type": "text", "text": "first"}))
+        self.assertEqual(self.uploaded(status=503), ["first"])
+        self.assertEqual(self.uploaded(), ["first"])
+
+    def test_stop_waits_for_the_final_reply_to_reach_the_transcript(self) -> None:
+        self.write(assistant("a-1", {"type": "text", "text": "first"}))
+        sent = []
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, object]:
+            sent.append(body["text"])
+            return 201, None
+
+        def sleep(seconds: float) -> None:
+            self.write(assistant("a-2", {"type": "text", "text": "Done."}))
+
+        with (
+            mock.patch.object(september, "request", request),
+            mock.patch.object(september.time, "sleep", sleep),
+        ):
+            september.upload_replies(self.event, final="Done.")
+        self.assertEqual(sent, ["first", "Done."])
+
+    def test_a_first_prompt_uploads_before_its_transcript_exists(self) -> None:
+        sent = []
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, object]:
+            sent.append(body["text"])
+            return 201, None
+
+        with mock.patch.object(september, "request", request):
+            september.prompt({**self.event, "prompt": "hello", "prompt_id": "p-1"})
+        self.assertEqual(sent, ["hello"])
+
+    def test_a_session_starts_after_text_already_in_its_transcript(self) -> None:
+        self.write(assistant("a-1", {"type": "text", "text": "before the plugin loaded"}))
+        with mock.patch.object(september, "ready_snapshot", return_value=None):
+            september.session_start(self.event)
+        self.assertEqual(self.uploaded(), [])
 
 
 class Upload(unittest.TestCase):
@@ -113,7 +212,7 @@ class Stamp(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def test_zoom_calls_get_the_sessions_snapshot(self) -> None:
-        september.remember("s-1", "snap-1")
+        september.save_state("s-1", {"snapshot": "snap-1"})
         output = september.stamp({"session_id": "s-1", "tool_input": {"start": 0, "length": 4}})
         self.assertEqual(
             output,

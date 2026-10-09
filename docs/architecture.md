@@ -77,8 +77,11 @@ the one HTTP API, so the server never learns about any particular harness:
 
 - **Claude Code** (`adapters/claude-code`, implemented): a plugin whose hooks run
   one standard-library Python script. `SessionStart` freezes a snapshot and loads
-  the view, and runs again after `/clear` and compaction. Prompt, tool, and
-  `Stop` hooks upload messages. A `PreToolUse` hook stamps the session's snapshot
+  the view, and runs again after `/clear` and compaction. Prompt and tool hooks
+  upload messages. Claude's own text, including text between tool calls, is read
+  from the session transcript at each prompt, tool, `Stop`, and `SessionEnd`
+  hook, keyed by its transcript entry. Claude Code writes the final reply just
+  after `Stop` fires, so that hook waits briefly for it. A `PreToolUse` hook stamps the session's snapshot
   into `zoom` and `date` calls. Claude Code cannot remove earlier messages, so the
   view is memory at session start rather than a per-turn replacement. It also
   saves hook context over 10,000 characters to a file, so the adapter asks for a
