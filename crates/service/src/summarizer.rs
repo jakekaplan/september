@@ -5,9 +5,7 @@ use std::time::Duration;
 use genai::{
     Client, ModelIden, ServiceTarget,
     adapter::AdapterKind,
-    chat::{
-        CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, StopReason,
-    },
+    chat::{ChatMessage, ChatOptions, ChatRequest, ChatResponse, ContentPart, StopReason},
     resolver::{AuthData, Endpoint},
 };
 use september_memory::{Node, SUMMARY_BYTES, Summary};
@@ -19,8 +17,6 @@ use crate::{
 };
 
 const ATTEMPTS: usize = 5;
-/// The gist caches the view in whole blocks of four lines.
-const CACHE_BLOCK_LINES: usize = 4;
 // The compaction half of the gist's system prompt, with the harness's kinds.
 const PROMPT: &str = "\
 You write an AI agent's memory: one step of a binary tree over its whole chat, \
@@ -149,14 +145,8 @@ impl Summarizer {
     /// Rejects provider failures and incomplete or non-text responses. No
     /// partial output is published.
     pub async fn summarize(&self, job: &Job) -> Result<String, Error> {
-        let task = task(job)?;
-        let (cached, rest) = split_for_cache(&job.context.view);
-        let mut messages = Vec::new();
-        if !cached.is_empty() {
-            messages.push(ChatMessage::user(cached).with_options(CacheControl::Ephemeral));
-        }
-        messages.push(ChatMessage::user(format!("{rest}\n\n{task}")));
-        let mut request = ChatRequest::new(messages)
+        let task = format!("{}\n\n{}", job.context.view, task(job)?);
+        let mut request = ChatRequest::new(vec![ChatMessage::user(task)])
             .with_system(PROMPT)
             .with_store(false);
         // Keep the wire response only long enough to reject content the adapter skips.
@@ -192,23 +182,6 @@ impl Summarizer {
         summary.truncate(summary.floor_char_boundary(MAX_SUMMARY_BYTES));
         Ok(summary)
     }
-}
-
-/// Split a `<chat>` context after its last whole block of four lines.
-///
-/// Contexts only grow at their end between batches, so the first part is the
-/// same in later jobs' contexts. A cache mark there lets those jobs read it from
-/// the provider's cache; the rest and the closing tag change with each job.
-fn split_for_cache(view: &str) -> (&str, &str) {
-    // The first newline ends `<chat>`; each later one ends a summary line.
-    let lines = view.matches('\n').count().saturating_sub(1);
-    let cached_lines = lines - lines % CACHE_BLOCK_LINES;
-    if cached_lines == 0 {
-        return ("", view);
-    }
-    view.match_indices('\n')
-        .nth(cached_lines)
-        .map_or(("", view), |(end, _)| view.split_at(end + 1))
 }
 
 /// The gist's compaction task, with a ruler as long as the limit.
