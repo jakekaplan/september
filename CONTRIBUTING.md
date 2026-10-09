@@ -79,7 +79,7 @@ all CI checks. Hook installation is opt-in per checkout.
 Check the registry for the latest stable release before adding a package. Use
 `>=` requirements, choose features explicitly, and commit `Cargo.lock`. Add a
 workspace dependency only when more than one crate uses it. Both internal crates
-are intentionally non-publishable; no project license is selected yet.
+are intentionally non-publishable.
 
 Install the current dependency checker with Cargo if it is not available:
 

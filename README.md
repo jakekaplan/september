@@ -139,5 +139,8 @@ dependency policy are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [Agent guidance](AGENTS.md) and [security policy](SECURITY.md).
 
 CI checks formatting, Clippy, file sizes, tests, rustdoc, and dependency policy.
-There is no coverage quota. No license has been selected; both crates are
-unpublished.
+There is no coverage quota. Both crates are unpublished.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

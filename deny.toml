@@ -16,11 +16,6 @@ ignore = ["RUSTSEC-2024-0436"]
 # These allowances cover the service's actual dependency graph, not advisories.
 allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
 
-# Neither internal crate is published. The project's own license is not chosen
-# yet; this exemption does not skip license checks for external dependencies.
-[licenses.private]
-ignore = true
-
 # Docket 0.2's Redis dependency enables these runtime dependencies even in memory
 # mode. Reviewed their bundled license texts: ISC and Boost permit redistribution
 # with the applicable notices retained; the trust-root data's CDLA requires its
