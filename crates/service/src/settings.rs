@@ -1,6 +1,12 @@
 //! Startup settings. File values are overridden by SEPTEMBER_* environment values.
 
-use std::{collections::HashMap, env, ffi::OsString, net::SocketAddr, path::Path};
+use std::{
+    collections::HashMap,
+    env,
+    ffi::OsString,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use config::{Config, Environment, File};
 use september::summarizer::Provider;
@@ -15,6 +21,14 @@ pub(crate) enum Summarizer {
     Model(Provider),
 }
 
+/// Where the archive lives: in process memory, lost at shutdown, or in SQLite.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Storage {
+    Memory,
+    Sqlite,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
@@ -23,6 +37,9 @@ pub(crate) struct Settings {
     pub model: Option<String>,
     /// Docket's queue: `memory://` in process, or a Redis URL.
     pub queue: String,
+    pub storage: Storage,
+    /// The SQLite file, created if missing, when `storage` is `sqlite`.
+    pub database: PathBuf,
 }
 
 /// A startup failure. Messages are fixed so that setting values are never echoed.
@@ -51,6 +68,8 @@ impl Settings {
             .set_default("bind", "127.0.0.1:3000")
             .and_then(|builder| builder.set_default("summarizer", "none"))
             .and_then(|builder| builder.set_default("queue", "memory://september"))
+            .and_then(|builder| builder.set_default("storage", "memory"))
+            .and_then(|builder| builder.set_default("database", "data/september.sqlite3"))
             .map_err(|_| Error("could not initialize settings"))?;
         if let Some(path) = path {
             builder = builder.add_source(File::from(path).format(config::FileFormat::Toml));
@@ -85,11 +104,13 @@ impl Settings {
 fn variables(
     environment: impl Iterator<Item = (OsString, OsString)>,
 ) -> Result<(HashMap<String, String>, Vec<String>), Error> {
-    const SETTINGS: [&str; 4] = [
+    const SETTINGS: [&str; 6] = [
         "SEPTEMBER_BIND",
         "SEPTEMBER_SUMMARIZER",
         "SEPTEMBER_MODEL",
         "SEPTEMBER_QUEUE",
+        "SEPTEMBER_STORAGE",
+        "SEPTEMBER_DATABASE",
     ];
     let mut settings = HashMap::new();
     let mut ignored = Vec::new();

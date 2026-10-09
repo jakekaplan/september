@@ -20,8 +20,12 @@ is the single statement of what is implemented. In short:
 - `september` splits storage into `Archive` for clients and `Jobs` for workers.
   The in-memory backend only stores state and calls the core. It prepares a
   whole publication, then commits it: the summaries, both views, and any
-  snapshot waiting on that cutoff. A Postgres backend would do the same inside a
-  transaction, preloading the summaries the core's lookups need.
+  snapshot waiting on that cutoff. The SQLite backend does the same inside one
+  immediate transaction, answering the core's lookups from the database and
+  restoring both views and snapshots from saved node covers. A Postgres backend
+  would follow it. Claims are leases on a running worker, so SQLite keeps them in
+  memory: after a restart every unpublished job is claimable again, with its
+  frozen context.
 - Claims are fenced by token, renewable for 60 seconds at a time, and capped at
   eight. A job's compaction-view context freezes on its first claim and
   survives expiry. Jobs whose context exceeds 32,000 bytes wait while other
@@ -92,7 +96,7 @@ hosted authentication is not implemented yet.
 
 ### Postgres
 
-The planned Postgres backend will own archived messages, stable source identities,
+SQLite serves one process from a local file. The planned Postgres backend will own archived messages, stable source identities,
 provenance, summary
 nodes, persisted views, snapshots, durable summary jobs, and model usage.
 

@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{Budget, Error, Node, Summary, View};
+use crate::{
+    Budget, Error, Node, Summary, View,
+    view::{is_cover, render},
+};
 
 /// A ready interaction's fixed view and permitted tree navigation.
 ///
@@ -68,6 +71,25 @@ impl View {
 }
 
 impl Snapshot {
+    /// Rebuild a saved snapshot from the completed summaries of its frozen cover.
+    ///
+    /// Save only [`Self::nodes`]; completed summaries are immutable, so the
+    /// restored view renders exactly as it did when frozen.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidView`] for gaps or overlaps, or
+    /// [`Error::Overflow`] if the rendered size cannot be represented.
+    pub fn restore(cover: &[Summary]) -> Result<Self, Error> {
+        if !is_cover(cover) {
+            return Err(Error::InvalidView);
+        }
+        Ok(Self {
+            rendered: render(cover)?,
+            nodes: cover.iter().map(Summary::node).collect(),
+        })
+    }
+
     /// The exclusive end derived from this interaction's frozen cover.
     #[must_use]
     pub fn cutoff(&self) -> u64 {
@@ -210,6 +232,17 @@ mod tests {
                 trigger: 6
             })
         );
+    }
+
+    #[test]
+    fn a_restored_snapshot_renders_and_zooms_as_when_frozen() {
+        let frozen = four_leaves().freeze(4).unwrap();
+        let cover: Vec<_> = (0..4)
+            .map(|id| Summary::new(node(id, 1), "0123456789"))
+            .collect();
+        assert_eq!(Snapshot::restore(&cover), Ok(frozen));
+        let gap = vec![Summary::new(node(1, 1), "late")];
+        assert_eq!(Snapshot::restore(&gap), Err(Error::InvalidView));
     }
 
     #[test]

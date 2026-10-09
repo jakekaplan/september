@@ -62,6 +62,8 @@ pub(crate) enum Invariant {
     MissingMessage(u64),
     #[error("missing completed summary {0}")]
     MissingSummary(september_memory::Node),
+    #[error("unknown database schema version {0}")]
+    UnknownSchema(i64),
 }
 
 #[cfg(test)]

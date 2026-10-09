@@ -107,8 +107,8 @@ in that crate's `tests/` directory. Do not create empty test files or speculativ
 When implemented, prioritize tree coverage, range validation, immutable
 snapshots, restart stability, source deduplication, worker recovery, byte limits,
 and retrieval. Use deterministic fake model responses; no paid model calls in
-automated tests. Database tests must exercise real Postgres and isolate their
-state. HTTP handlers should be testable without binding a listening socket.
+automated tests. Database tests must exercise the real database and isolate
+their state: SQLite in temporary files, Postgres once it exists. HTTP handlers should be testable without binding a listening socket.
 
 Run the smallest relevant checks locally, from the repository root:
 

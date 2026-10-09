@@ -13,7 +13,9 @@ use crate::{
 };
 
 mod memory;
+mod sqlite;
 pub use memory::InMemory;
+pub use sqlite::Sqlite;
 
 /// Messages, interaction snapshots, and zoom: what clients use.
 ///

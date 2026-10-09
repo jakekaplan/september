@@ -1,11 +1,19 @@
-//! Local September server. In-memory mode intentionally loses data at shutdown.
+//! Local September server. In-memory storage intentionally loses data at
+//! shutdown; SQLite storage keeps it.
 
 mod settings;
 
 use std::{error::Error, process::ExitCode, sync::Arc};
 
 use docket::Docket;
-use september::{router, serve, storage::InMemory, summarizer::Summarizer, worker::Worker};
+use september::{
+    router, serve,
+    storage::{Archive, InMemory, Jobs, Sqlite},
+    summarizer::Summarizer,
+    worker::Worker,
+};
+use september_memory::Budget;
+use settings::{Settings, Storage};
 use tokio::{net::TcpListener, signal, sync::watch, task::JoinSet};
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
@@ -31,8 +39,27 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let settings = settings::Settings::load()?;
-    let storage = Arc::new(InMemory::default());
+    let settings = Settings::load()?;
+    match settings.storage {
+        Storage::Memory => serve_with(Arc::new(InMemory::default()), settings).await,
+        Storage::Sqlite => {
+            let storage = Sqlite::open(&settings.database, Budget::CHAT).map_err(|error| {
+                let cause = match &error {
+                    september::Error::Internal { source, .. } => source.to_string(),
+                    error => error.to_string(),
+                };
+                format!("could not open {}: {cause}", settings.database.display())
+            })?;
+            serve_with(Arc::new(storage), settings).await
+        }
+    }
+}
+
+async fn serve_with<S: Archive + Jobs>(
+    storage: Arc<S>,
+    settings: Settings,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let durable = storage.is_durable();
     let worker = match settings.summarizer {
         settings::Summarizer::None => None,
         settings::Summarizer::Model(provider) => {
@@ -53,7 +80,11 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let listener = TcpListener::bind(settings.bind).await?;
     let address = listener.local_addr()?;
     let shutdown = shutdown_signal()?;
-    tracing::info!(%address, storage = "memory", durability = "volatile", "September listening; restart clears all data");
+    if durable {
+        tracing::info!(%address, database = %settings.database.display(), "September listening");
+    } else {
+        tracing::info!(%address, storage = "memory", durability = "volatile", "September listening; restart clears all data");
+    }
     let (stop, mut stopped) = watch::channel(());
     let mut tasks: JoinSet<Result<(), Box<dyn Error + Send + Sync>>> = JoinSet::new();
     tasks.spawn(async move {

@@ -18,6 +18,19 @@ fn defaults_need_no_model_or_credentials() {
     assert_eq!(settings.summarizer, Summarizer::None);
     assert!(settings.model.is_none());
     assert_eq!(settings.queue, "memory://september");
+    assert_eq!(settings.storage, Storage::Memory);
+}
+
+#[test]
+fn sqlite_storage_takes_its_database_path_from_the_environment() {
+    let settings = Settings::read(
+        None,
+        environment(&[("STORAGE", "sqlite"), ("DATABASE", "/var/lib/september.db")]),
+    )
+    .unwrap();
+    assert_eq!(settings.storage, Storage::Sqlite);
+    assert_eq!(settings.database, Path::new("/var/lib/september.db"));
+    assert!(Settings::read(None, environment(&[("STORAGE", "postgres")])).is_err());
 }
 
 #[test]
@@ -71,6 +84,7 @@ fn unknown_september_variables_are_ignored_by_name_but_settings_are_kept() {
     let (settings, ignored) = variables(
         [
             ("SEPTEMBER_MODEL", "from-env"),
+            ("SEPTEMBER_STORAGE", "sqlite"),
             ("SEPTEMBER_URL", "http://127.0.0.1:3000"),
             ("SEPTEMBER_CONFIG", "/tmp/september.toml"),
             ("PATH", "/usr/bin"),
@@ -81,7 +95,10 @@ fn unknown_september_variables_are_ignored_by_name_but_settings_are_kept() {
     .unwrap();
     assert_eq!(
         settings,
-        HashMap::from([("SEPTEMBER_MODEL".to_owned(), "from-env".to_owned())])
+        HashMap::from([
+            ("SEPTEMBER_MODEL".to_owned(), "from-env".to_owned()),
+            ("SEPTEMBER_STORAGE".to_owned(), "sqlite".to_owned()),
+        ])
     );
     assert_eq!(ignored, ["SEPTEMBER_URL"]);
 }
@@ -89,7 +106,7 @@ fn unknown_september_variables_are_ignored_by_name_but_settings_are_kept() {
 #[test]
 fn the_settings_file_still_rejects_unknown_keys() {
     let path = std::env::temp_dir().join(format!("september-{}.toml", uuid::Uuid::new_v4()));
-    fs::write(&path, "storage = 'memory'\n").unwrap();
+    fs::write(&path, "retention = 'forever'\n").unwrap();
     let result = Settings::read(Some(&path), environment(&[]));
     fs::remove_file(&path).unwrap();
     assert!(result.is_err());

@@ -1,9 +1,8 @@
 # Contributing to September
 
-September has a deterministic memory core and a local HTTP service with volatile
-in-memory storage. Persistent storage, model summarization, authentication, MCP,
-and harness adapters remain future work. Add dependencies only for implemented
-behavior.
+September has a deterministic memory core and a local HTTP service with
+in-memory or SQLite storage. Shared Postgres storage and authentication remain
+future work. Add dependencies only for implemented behavior.
 
 ## Setup
 
@@ -12,8 +11,9 @@ Install [rustup](https://rustup.rs/) and [uv](https://docs.astral.sh/uv/).
 [Just](https://github.com/casey/just) if you want recipe shortcuts; all commands
 can also run directly.
 
-All commands below run from the repository root. No Postgres, model credentials,
-or attachment storage are needed to test either crate.
+All commands below run from the repository root. No database server, model
+credentials, or attachment storage are needed to test either crate; SQLite is
+bundled, and its tests use temporary files.
 
 ## Focused local checks
 

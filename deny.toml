@@ -11,9 +11,10 @@ ignore = ["RUSTSEC-2024-0436"]
 
 [licenses]
 # Axum/Tokio/Serde and their runtime dependencies use MIT or Apache-2.0.
-# matchit additionally requires BSD-3-Clause; unicode-ident requires Unicode-3.0.
+# matchit additionally requires BSD-3-Clause; unicode-ident requires Unicode-3.0;
+# foldhash, the hasher behind rusqlite's statement cache, requires Zlib.
 # These allowances cover the service's actual dependency graph, not advisories.
-allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0"]
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
 
 # Neither internal crate is published. The project's own license is not chosen
 # yet; this exemption does not skip license checks for external dependencies.

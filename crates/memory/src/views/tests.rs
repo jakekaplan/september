@@ -85,3 +85,30 @@ fn context_waits_while_it_exceeds_the_compaction_trigger() {
     assert_eq!(views.context(node(1, 1)).unwrap().unwrap().cutoff(), 1);
     assert_eq!(views.context(node(2, 1)), Ok(None));
 }
+
+#[test]
+fn restored_views_continue_exactly_where_the_saved_ones_stopped() {
+    let budgets = (Budget::new(30, 60).unwrap(), Budget::new(20, 40).unwrap());
+    let mut views = Views::new(budgets.0, budgets.1);
+    views
+        .advance(lookup(&archive(4, false)), |_| false)
+        .unwrap();
+    let restore = |view: &View| {
+        View::restore(
+            view.summaries().to_vec(),
+            view.is_shrinking(),
+            view.budget(),
+        )
+        .unwrap()
+    };
+    let mut restored = Views::restore(restore(views.live()), restore(views.compaction())).unwrap();
+    assert_eq!(restored, views);
+    let built = archive(4, true);
+    views.advance(lookup(&built), |_| false).unwrap();
+    restored.advance(lookup(&built), |_| false).unwrap();
+    assert_eq!(restored, views);
+    assert_eq!(
+        Views::restore(restore(views.live()), View::new(budgets.1)),
+        Err(Error::InvalidView)
+    );
+}

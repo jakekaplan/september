@@ -24,8 +24,10 @@ This README is the single statement of what is implemented.
   snapshots, zoom to originals, and fenced summary claims. Clients use the
   `Archive` trait and workers use the `Jobs` trait, so a backend only stores
   state and calls the core.
-- **Storage**: in memory only. Acknowledgments are volatile; restarting loses
-  all data.
+- **Storage**: in memory by default, where acknowledgments are volatile and
+  restarting loses all data; or SQLite (`SEPTEMBER_STORAGE=sqlite`), which
+  commits before acknowledging and keeps the archive, views, snapshots, and
+  jobs across restarts in one file held by one server process.
 - **Worker**: opt-in Docket worker summarizing with OpenAI or Anthropic. Its
   queue is `SEPTEMBER_QUEUE`, in process by default; a `redis://` URL is
   accepted but untested.
@@ -33,8 +35,8 @@ This README is the single statement of what is implemented.
   tools, each bound to the interaction's frozen snapshot.
 - **Claude Code plugin** (`adapters/claude-code`): captures each session and
   loads the memory view at session start, after `/clear`, and after compaction.
-- **Not implemented**: persistent storage, authentication, a Pi adapter, and a
-  CLI. Live summary quality is unvalidated.
+- **Not implemented**: shared Postgres storage, authentication, a Pi adapter,
+  and a CLI. Live summary quality is unvalidated.
 
 ## Run locally
 
@@ -66,6 +68,8 @@ bind = "127.0.0.1:3000"
 summarizer = "openai"
 model = "gpt-6-luna"
 queue = "memory://september"
+storage = "sqlite"                    # or "memory", the default
+database = "data/september.sqlite3"   # created if missing
 ```
 
 ## Use with Claude Code

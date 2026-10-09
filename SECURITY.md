@@ -1,7 +1,7 @@
 # Security policy
 
 September currently runs a local, unauthenticated HTTP service with volatile
-in-memory storage. The executable requires a loopback bind. HTTP requests have
+in-memory storage or a local SQLite file. The executable requires a loopback bind. HTTP requests have
 body, request/connection concurrency, header-read and handler time limits;
 shutdown has a bounded drain period. Browser Origin headers and nonlocal Host
 headers are rejected. Local processes are trusted, including callers of summary
@@ -47,7 +47,8 @@ of the data-handling trust boundary.
 
 Use HTTPS, bounded uploads and work queues, model timeouts, and spend limits.
 Persistent backends acknowledge uploads only after durable storage. The local
-in-memory backend explicitly returns volatile acknowledgments. Back up the database and
+in-memory backend explicitly returns volatile acknowledgments. The SQLite file
+holds conversation text in plain form; restrict its permissions. Back up the database and
 attachments, restrict backup access, and test restoration. Define retention,
 export, and deletion behavior before storing real conversations in production;
 append-only history alone is not a complete privacy policy.

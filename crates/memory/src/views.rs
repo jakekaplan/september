@@ -23,10 +23,28 @@ impl Views {
         }
     }
 
+    /// Restore views saved together, without selecting new summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidView`] if they cover different prefixes.
+    pub fn restore(live: View, compaction: View) -> Result<Self, Error> {
+        if live.cutoff() != compaction.cutoff() {
+            return Err(Error::InvalidView);
+        }
+        Ok(Self { live, compaction })
+    }
+
     /// The view interactions freeze.
     #[must_use]
     pub const fn live(&self) -> &View {
         &self.live
+    }
+
+    /// The smaller view summary jobs take their context from.
+    #[must_use]
+    pub const fn compaction(&self) -> &View {
+        &self.compaction
     }
 
     /// Append every built leaf after the live cutoff, advancing both batches.

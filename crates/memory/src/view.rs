@@ -102,13 +102,8 @@ impl View {
         shrinking: bool,
         budget: Budget,
     ) -> Result<Self, Error> {
-        let mut next = 0;
-        for summary in &summaries {
-            let node = summary.node();
-            if node.start() != next {
-                return Err(Error::InvalidView);
-            }
-            next = node.end();
+        if !is_cover(&summaries) {
+            return Err(Error::InvalidView);
         }
         let view = Self {
             summaries,
@@ -287,12 +282,7 @@ impl View {
     ///
     /// Returns [`Error::Overflow`] if the byte count cannot be represented.
     pub fn rendered_bytes(&self) -> Result<usize, Error> {
-        self.summaries
-            .iter()
-            .try_fold(EMPTY_BYTES, |size, summary| {
-                size.checked_add(summary.rendered_bytes()?)
-                    .ok_or(Error::Overflow)
-            })
+        rendered_bytes(&self.summaries)
     }
 
     /// Render summaries oldest first, flattening CR and LF to spaces.
@@ -304,14 +294,37 @@ impl View {
     ///
     /// Returns [`Error::Overflow`] if the rendered size cannot be represented.
     pub fn render(&self) -> Result<String, Error> {
-        let mut rendered = String::with_capacity(self.rendered_bytes()?);
-        rendered.push_str(OPEN);
-        for summary in &self.summaries {
-            summary.render_into(&mut rendered);
-        }
-        rendered.push_str(CLOSE);
-        Ok(rendered)
+        render(&self.summaries)
     }
+}
+
+/// Whether `summaries` cover the archive prefix from 0 without gaps or overlaps.
+pub(crate) fn is_cover(summaries: &[Summary]) -> bool {
+    let mut next = 0;
+    summaries.iter().all(|summary| {
+        let node = summary.node();
+        let follows = node.start() == next;
+        next = node.end();
+        follows
+    })
+}
+
+fn rendered_bytes(summaries: &[Summary]) -> Result<usize, Error> {
+    summaries.iter().try_fold(EMPTY_BYTES, |size, summary| {
+        size.checked_add(summary.rendered_bytes()?)
+            .ok_or(Error::Overflow)
+    })
+}
+
+/// Render a cover inside `<chat>` tags, oldest first.
+pub(crate) fn render(summaries: &[Summary]) -> Result<String, Error> {
+    let mut rendered = String::with_capacity(rendered_bytes(summaries)?);
+    rendered.push_str(OPEN);
+    for summary in summaries {
+        summary.render_into(&mut rendered);
+    }
+    rendered.push_str(CLOSE);
+    Ok(rendered)
 }
 
 fn most_due_pair(
