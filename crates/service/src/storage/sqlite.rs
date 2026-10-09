@@ -1,4 +1,4 @@
-//! Durable single-process storage in one SQLite file.
+//! Single-process storage in SQLite: durable in a file, or volatile in memory.
 //!
 //! Each change is one immediate transaction: read the saved state it needs, let
 //! the memory core decide, write the result, and commit before replying. Claims
@@ -28,10 +28,11 @@ mod snapshots;
 const SCHEMA: &str = include_str!("sqlite/schema.sql");
 const SCHEMA_VERSION: i64 = 1;
 
-/// Durable storage in one SQLite file, held exclusively by this process until
+/// Storage in one SQLite database, held exclusively by this process until
 /// dropped. Cloning an `Arc<Sqlite>` shares the archive.
 pub struct Sqlite {
     state: Arc<Mutex<State>>,
+    durable: bool,
 }
 
 struct State {
@@ -41,7 +42,7 @@ struct State {
     claims: Claims,
 }
 
-/// Why the archive file could not be opened at startup.
+/// Why the archive could not be opened at startup.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     /// Its folder could not be created.
@@ -56,7 +57,8 @@ pub enum OpenError {
 }
 
 impl Sqlite {
-    /// Open or create the archive at `path`, whose live view batches within `budget`.
+    /// Open or create a durable archive at `path`, whose live view batches
+    /// within `budget`.
     ///
     /// # Errors
     ///
@@ -66,14 +68,28 @@ impl Sqlite {
         if let Some(folder) = path.parent() {
             fs::create_dir_all(folder).map_err(OpenError::Folder)?;
         }
-        let mut db = Connection::open(path)?;
+        let db = Connection::open(path)?;
         // Fail at once if another server holds the file instead of waiting for it.
         db.busy_timeout(Duration::ZERO)?;
         // Claims are fenced in this process, so it must be the file's only user.
         db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
         db.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
         db.pragma_update(None, "synchronous", "FULL")?;
-        // The first write takes the exclusive lock, which is held from here on.
+        Self::start(db, budget, true)
+    }
+
+    /// Start an empty volatile archive, lost when dropped, whose live view
+    /// batches within `budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError`] if SQLite cannot create the database.
+    pub fn in_memory(budget: Budget) -> Result<Self, OpenError> {
+        Self::start(Connection::open_in_memory()?, budget, false)
+    }
+
+    fn start(mut db: Connection, budget: Budget, durable: bool) -> Result<Self, OpenError> {
+        // A file's first write takes the exclusive lock, held from here on.
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
@@ -91,6 +107,7 @@ impl Sqlite {
                 budget,
                 claims: Claims::default(),
             })),
+            durable,
         })
     }
 
@@ -108,7 +125,7 @@ impl Sqlite {
 
 impl Archive for Sqlite {
     fn is_durable(&self) -> bool {
-        true
+        self.durable
     }
 
     async fn ingest(&self, message: Message) -> Result<Receipt, Error> {

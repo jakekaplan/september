@@ -32,7 +32,6 @@ impl Jobs for Sqlite {
 
 impl State {
     fn claim(&mut self, now: Instant) -> Result<Option<Claim>, Error> {
-        // Lapsed jobs never left the jobs table, so they need no requeueing.
         self.claims.expire(now);
         if self.claims.is_full() {
             return Ok(None);

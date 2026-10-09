@@ -24,10 +24,11 @@ This README is the single statement of what is implemented.
   snapshots, zoom to originals, and fenced summary claims. Clients use the
   `Archive` trait and workers use the `Jobs` trait, so a backend only stores
   state and calls the core.
-- **Storage**: in memory by default, where acknowledgments are volatile and
-  restarting loses all data; or SQLite (`SEPTEMBER_STORAGE=sqlite`), which
-  commits before acknowledging and keeps the archive, views, snapshots, and
-  jobs across restarts in one file held by one server process.
+- **Storage**: SQLite, in memory by default, where acknowledgments are volatile
+  and restarting loses all data; or in a file
+  (`SEPTEMBER_STORAGE=sqlite://data/september.sqlite3`), which commits before
+  acknowledging and keeps the archive, views, snapshots, and jobs across
+  restarts. One server process holds the file.
 - **Worker**: opt-in Docket worker summarizing with OpenAI or Anthropic. Its
   queue is `SEPTEMBER_QUEUE`, in process by default; a `redis://` URL is
   accepted but untested.
@@ -68,8 +69,7 @@ bind = "127.0.0.1:3000"
 summarizer = "openai"
 model = "gpt-6-luna"
 queue = "memory://september"
-storage = "sqlite"                    # or "memory", the default
-database = "data/september.sqlite3"   # created if missing
+storage = "sqlite://data/september.sqlite3"   # or "memory", the default
 ```
 
 ## Use with Claude Code

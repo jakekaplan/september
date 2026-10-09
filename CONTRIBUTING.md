@@ -1,7 +1,7 @@
 # Contributing to September
 
 September has a deterministic memory core and a local HTTP service with
-in-memory or SQLite storage. Shared Postgres storage and authentication remain
+SQLite storage, in memory or in a file. Shared Postgres storage and authentication remain
 future work. Add dependencies only for implemented behavior.
 
 ## Setup

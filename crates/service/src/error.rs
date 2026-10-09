@@ -21,9 +21,6 @@ pub enum Error {
     /// The requested range is not within the frozen cover.
     #[error("range is outside the frozen cover")]
     OutsideSnapshot,
-    /// The bounded backend is full.
-    #[error("storage capacity reached")]
-    Capacity,
     /// An internal invariant or storage operation failed.
     #[error("internal service failure")]
     Internal {

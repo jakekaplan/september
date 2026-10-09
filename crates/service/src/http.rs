@@ -172,7 +172,6 @@ impl IntoResponse for Error {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::NotReady => (StatusCode::CONFLICT, "not_ready"),
             Self::OutsideSnapshot => (StatusCode::FORBIDDEN, "outside_snapshot"),
-            Self::Capacity => (StatusCode::SERVICE_UNAVAILABLE, "capacity"),
             Self::Internal { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         if let Self::Internal { operation, source } = &self {

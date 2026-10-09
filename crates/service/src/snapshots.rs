@@ -1,8 +1,6 @@
 //! Frozen interaction views and authorized retrieval results.
 
-use std::sync::Arc;
-
-use september_memory::{Budget, Node, Snapshot as Frozen, View};
+use september_memory::{Node, Snapshot as Frozen};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -81,21 +79,6 @@ impl Snapshot {
             },
         }
     }
-}
-
-/// Freeze `view` for an interaction saved at `cutoff`, merged further through
-/// built parents when it asked for a view `within` a smaller size.
-pub(crate) fn freeze(
-    view: &View,
-    cutoff: u64,
-    within: Option<Budget>,
-    built: impl Fn(Node) -> Option<Arc<str>>,
-) -> Result<Frozen, Error> {
-    match within {
-        None => view.freeze(cutoff),
-        Some(budget) => view.freeze_within(cutoff, budget, built),
-    }
-    .map_err(|error| Error::internal("freeze snapshot", error))
 }
 
 /// A snapshot-authorized retrieval result.

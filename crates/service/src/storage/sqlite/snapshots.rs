@@ -5,10 +5,7 @@ use september_memory::{Budget, Node, Snapshot as Frozen, View};
 use uuid::Uuid;
 
 use super::{Lookup, State, cover, decode_nodes, encode_nodes, load_view, next_id};
-use crate::{
-    Error,
-    snapshots::{Snapshot, freeze},
-};
+use crate::{Error, snapshots::Snapshot};
 
 impl State {
     /// Freeze the live view for a new interaction if it covers the archive, else
@@ -105,4 +102,19 @@ pub(super) fn saved(db: &Connection, id: Uuid) -> Result<(u64, Option<Frozen>), 
         })
         .transpose()?;
     Ok((cutoff, frozen))
+}
+
+/// Freeze `view` for an interaction saved at `cutoff`, merged further through
+/// built parents when it asked for a view `within` a smaller size.
+fn freeze(
+    view: &View,
+    cutoff: u64,
+    within: Option<Budget>,
+    built: impl Fn(Node) -> Option<Arc<str>>,
+) -> Result<Frozen, Error> {
+    match within {
+        None => view.freeze(cutoff),
+        Some(budget) => view.freeze_within(cutoff, budget, built),
+    }
+    .map_err(|error| Error::internal("freeze snapshot", error))
 }

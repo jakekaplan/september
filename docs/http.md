@@ -6,11 +6,12 @@ address. Ctrl-C or SIGTERM stops accepting new connections, allows ten seconds
 for active connections to drain, then cancels and joins any remaining connection
 tasks.
 
-All data belongs to one archive shared by callers of this process. Storage is in
-memory by default: every response includes `x-september-durability: volatile`,
-`GET /health` returns `{"storage":"volatile"}`, and restarting loses messages,
-views, jobs, deduplication records, and snapshots. With `SEPTEMBER_STORAGE=sqlite`
-the archive lives in `SEPTEMBER_DATABASE` (default `data/september.sqlite3`):
+All data belongs to one archive shared by callers of this process, kept in
+SQLite. By default the database is in memory: every response includes
+`x-september-durability: volatile`, `GET /health` returns
+`{"storage":"volatile"}`, and restarting loses messages, views, jobs,
+deduplication records, and snapshots. With
+`SEPTEMBER_STORAGE=sqlite://data/september.sqlite3` it lives in that file:
 responses say `durable`, and every change commits before its response. A
 restart keeps everything except live claims, so claimed jobs become claimable
 again and a stale worker's completion is rejected. The server holds the file
@@ -160,7 +161,7 @@ job is claimed again. Pending snapshots never receive a partial view. On
 shutdown the worker lets running summaries finish for ten seconds, then cancels
 them.
 
-## Input and capacity limits
+## Input and request limits
 
 - `source` consists of `harness`, `session`, `entry`, and unsigned `part`.
   `project`, `branch`, and source identities are required, nonblank, at most 256
@@ -176,10 +177,6 @@ them.
   At most 64 requests execute concurrently, with a ten-second request deadline.
   The server also admits at most 64 connections and requires each request's
   headers within ten seconds, before any handler runs.
-- The in-memory archive accepts at most 1,024 messages and 128 snapshots.
-  Jobs are bounded by the archive's binary tree. Capacity exhaustion returns 503;
-  retries for existing messages and snapshots still work. There is no eviction.
-  The SQLite archive has no such caps.
 
 The live view uses the core's 128,000-byte trigger and 64,000-byte target. It may
 remain above target while parent jobs wait. A ready snapshot means complete
@@ -198,17 +195,16 @@ Memory rules live in `september-memory`, not in a backend.
 - `Views` advances the live and compaction views and selects job context.
 
 A backend loads what those need, applies their result atomically, and stores it.
-The memory backend serializes state changes with a process-local mutex,
-prepares every fallible change before committing, and freezes waiting snapshots
-as their exact cutoffs become covered. Ready snapshots are never rebuilt. The
-worker's completion token is stored with its summary. The SQLite backend does
-the same work in one immediate transaction per change: it loads the saved views,
-lets the core decide, and writes the result before committing. Snapshots store
-only their cover's nodes and render again from immutable summaries on read.
+The SQLite backend, in memory or in a file, makes each change one immediate
+transaction: it loads the saved views, lets the core decide, writes the result,
+and commits before replying. Waiting snapshots freeze as their exact cutoffs
+become covered; ready ones are never rebuilt. Snapshots store only their cover's
+nodes and render again from immutable summaries on read. The worker's
+completion token is stored with its summary.
 Internal failures retain their typed cause and operation for server diagnostics,
 while HTTP 500 responses expose only `{"error":"internal"}`.
 
-Adding another backend means implementing these atomic operations and
+Adding a backend, such as Postgres, means implementing these atomic operations and
 startup selection, preserving the same invariants, and committing before
 acknowledgment. There is no generic table API or memory-core database dependency.
 The service tests exercise this contract with deterministic summary text and

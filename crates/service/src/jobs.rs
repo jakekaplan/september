@@ -121,8 +121,8 @@ impl Completion {
 /// Leases on running jobs, fenced by token: at most [`MAX_CLAIMS`] at once,
 /// each lapsing [`LEASE`] after it was granted or last renewed.
 ///
-/// Leases belong to the running process, so every backend keeps them in
-/// memory; storage keeps the jobs. Expiry visits only the expiry index.
+/// Leases belong to the running process, so they live in memory while storage
+/// keeps the jobs. Expiry visits only the expiry index.
 #[derive(Default)]
 pub(crate) struct Claims {
     leases: BTreeMap<Node, (Uuid, Instant)>,
@@ -130,17 +130,14 @@ pub(crate) struct Claims {
 }
 
 impl Claims {
-    /// Drop lapsed leases, returning their jobs.
-    pub(crate) fn expire(&mut self, now: Instant) -> Vec<Node> {
-        let mut lapsed = Vec::new();
+    /// Drop lapsed leases. Their jobs stay in storage, claimable again.
+    pub(crate) fn expire(&mut self, now: Instant) {
         while let Some(&(deadline, node)) = self.expirations.first() {
             if deadline > now {
                 break;
             }
             self.release(node);
-            lapsed.push(node);
         }
-        lapsed
     }
 
     pub(crate) fn is_full(&self) -> bool {
@@ -203,8 +200,10 @@ mod tests {
         ));
         let later = start + LEASE / 2;
         claims.renew(node, token, later).unwrap();
-        assert_eq!(claims.expire(start + LEASE), []);
-        assert_eq!(claims.expire(later + LEASE), [node]);
+        claims.expire(start + LEASE);
+        assert!(claims.is_claimed(node));
+        claims.expire(later + LEASE);
+        assert!(!claims.is_claimed(node));
         assert!(matches!(
             claims.check(node, token, later),
             Err(Error::ClaimLost)
@@ -218,7 +217,7 @@ mod tests {
         let start = Instant::now();
         let stale = claims.grant(node, start);
         let fresh = claims.grant(node, start + LEASE / 2);
-        assert_eq!(claims.expire(start + LEASE), []);
+        claims.expire(start + LEASE);
         assert!(matches!(
             claims.check(node, stale, start),
             Err(Error::ClaimLost)

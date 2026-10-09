@@ -21,12 +21,28 @@ pub(crate) enum Summarizer {
     Model(Provider),
 }
 
-/// Where the archive lives: in process memory, lost at shutdown, or in SQLite.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+/// Where the archive lives: `memory`, lost at shutdown, or `sqlite://<path>`,
+/// a file created if missing. `sqlite://data/a.db` is relative to the working
+/// directory; `sqlite:///var/lib/a.db` is absolute.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(try_from = "String")]
 pub(crate) enum Storage {
     Memory,
-    Sqlite,
+    Sqlite(PathBuf),
+}
+
+impl TryFrom<String> for Storage {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Error> {
+        if value == "memory" {
+            return Ok(Self::Memory);
+        }
+        match value.strip_prefix("sqlite://") {
+            Some(path) if !path.is_empty() => Ok(Self::Sqlite(path.into())),
+            _ => Err(Error("storage must be memory or sqlite://<path>")),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -38,8 +54,6 @@ pub(crate) struct Settings {
     /// Docket's queue: `memory://` in process, or a Redis URL.
     pub queue: String,
     pub storage: Storage,
-    /// The SQLite file, created if missing, when `storage` is `sqlite`.
-    pub database: PathBuf,
 }
 
 /// A startup failure. Messages are fixed so that setting values are never echoed.
@@ -69,7 +83,6 @@ impl Settings {
             .and_then(|builder| builder.set_default("summarizer", "none"))
             .and_then(|builder| builder.set_default("queue", "memory://september"))
             .and_then(|builder| builder.set_default("storage", "memory"))
-            .and_then(|builder| builder.set_default("database", "data/september.sqlite3"))
             .map_err(|_| Error("could not initialize settings"))?;
         if let Some(path) = path {
             builder = builder.add_source(File::from(path).format(config::FileFormat::Toml));
@@ -104,13 +117,12 @@ impl Settings {
 fn variables(
     environment: impl Iterator<Item = (OsString, OsString)>,
 ) -> Result<(HashMap<String, String>, Vec<String>), Error> {
-    const SETTINGS: [&str; 6] = [
+    const SETTINGS: [&str; 5] = [
         "SEPTEMBER_BIND",
         "SEPTEMBER_SUMMARIZER",
         "SEPTEMBER_MODEL",
         "SEPTEMBER_QUEUE",
         "SEPTEMBER_STORAGE",
-        "SEPTEMBER_DATABASE",
     ];
     let mut settings = HashMap::new();
     let mut ignored = Vec::new();

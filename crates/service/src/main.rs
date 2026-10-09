@@ -1,5 +1,5 @@
-//! Local September server. In-memory storage intentionally loses data at
-//! shutdown; SQLite storage keeps it.
+//! Local September server. Memory storage intentionally loses data at shutdown;
+//! SQLite file storage keeps it.
 
 mod settings;
 
@@ -8,7 +8,7 @@ use std::{error::Error, process::ExitCode, sync::Arc};
 use docket::Docket;
 use september::{
     router, serve,
-    storage::{Archive, InMemory, Jobs, Sqlite},
+    storage::{Archive, Sqlite},
     summarizer::Summarizer,
     worker::Worker,
 };
@@ -40,22 +40,11 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let settings = Settings::load()?;
-    match settings.storage {
-        Storage::Memory => serve_with(Arc::new(InMemory::default()), settings).await,
-        Storage::Sqlite => {
-            let database = settings.database.display();
-            let storage = Sqlite::open(&settings.database, Budget::CHAT)
-                .map_err(|error| format!("could not open {database}: {error}"))?;
-            tracing::info!(%database, "opened the SQLite archive");
-            serve_with(Arc::new(storage), settings).await
-        }
-    }
-}
-
-async fn serve_with<S: Archive + Jobs>(
-    storage: Arc<S>,
-    settings: Settings,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let storage = Arc::new(match &settings.storage {
+        Storage::Memory => Sqlite::in_memory(Budget::CHAT)?,
+        Storage::Sqlite(path) => Sqlite::open(path, Budget::CHAT)
+            .map_err(|error| format!("could not open {}: {error}", path.display()))?,
+    });
     let durable = storage.is_durable();
     let worker = match settings.summarizer {
         settings::Summarizer::None => None,

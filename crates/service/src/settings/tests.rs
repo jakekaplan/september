@@ -22,15 +22,17 @@ fn defaults_need_no_model_or_credentials() {
 }
 
 #[test]
-fn sqlite_storage_takes_its_database_path_from_the_environment() {
-    let settings = Settings::read(
-        None,
-        environment(&[("STORAGE", "sqlite"), ("DATABASE", "/var/lib/september.db")]),
-    )
-    .unwrap();
-    assert_eq!(settings.storage, Storage::Sqlite);
-    assert_eq!(settings.database, Path::new("/var/lib/september.db"));
-    assert!(Settings::read(None, environment(&[("STORAGE", "postgres")])).is_err());
+fn sqlite_storage_names_its_file_and_other_storage_is_rejected() {
+    for (value, path) in [
+        ("sqlite://data/september.db", "data/september.db"),
+        ("sqlite:///var/lib/september.db", "/var/lib/september.db"),
+    ] {
+        let settings = Settings::read(None, environment(&[("STORAGE", value)])).unwrap();
+        assert_eq!(settings.storage, Storage::Sqlite(path.into()));
+    }
+    for value in ["sqlite", "sqlite://", "postgres://localhost/september"] {
+        assert!(Settings::read(None, environment(&[("STORAGE", value)])).is_err());
+    }
 }
 
 #[test]

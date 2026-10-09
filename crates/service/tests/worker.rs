@@ -20,7 +20,7 @@ use september::{
     archive::{Kind, Message, Source},
     jobs::{Claim, Completion, Job, MAX_SUMMARY_BYTES},
     snapshots::{Detail, Snapshot},
-    storage::{Archive, InMemory, Jobs},
+    storage::{Archive, Jobs, Sqlite},
     worker::Worker,
 };
 use september_memory::{Budget, Node};
@@ -83,7 +83,7 @@ async fn ready(
 
 // Observe the worker's claims and renewals so virtual-time checks need no polling.
 struct Observed {
-    inner: InMemory,
+    inner: Sqlite,
     token: watch::Sender<Option<Uuid>>,
     renewals: watch::Sender<usize>,
 }
@@ -91,7 +91,7 @@ struct Observed {
 impl Default for Observed {
     fn default() -> Self {
         Self {
-            inner: InMemory::default(),
+            inner: Sqlite::in_memory(Budget::CHAT).unwrap(),
             token: watch::channel(None).0,
             renewals: watch::channel(0).0,
         }
@@ -118,7 +118,7 @@ impl Jobs for Observed {
 
 #[tokio::test]
 async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
-    let storage = Arc::new(InMemory::new(Budget::new(80, 160).unwrap()));
+    let storage = Arc::new(Sqlite::in_memory(Budget::new(80, 160).unwrap()).unwrap());
     let (calls, mut called) = watch::channel(0);
     let gate = Arc::new(Semaphore::new(0));
     let worker = Worker::new(queue().await, Arc::clone(&storage), {
@@ -184,7 +184,7 @@ async fn accepts_new_work_while_running_and_preserves_frozen_snapshots() {
 
 #[tokio::test]
 async fn eight_jobs_drain_on_shutdown_without_claiming_more_work() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     for entry in 0..16 {
         storage.ingest(message(entry)).await.unwrap();
     }
@@ -226,7 +226,7 @@ async fn eight_jobs_drain_on_shutdown_without_claiming_more_work() {
 
 #[tokio::test]
 async fn transient_failure_retries_and_completes() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     storage.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
     storage.prepare(id, None).await.unwrap();
@@ -303,7 +303,7 @@ async fn renewal_keeps_a_slow_summary_valid_beyond_its_original_lease() {
 
 #[tokio::test]
 async fn rejected_results_retry_then_their_claim_lapses_for_another_worker() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     storage.ingest(message(0)).await.unwrap();
     let id = Uuid::new_v4();
     storage.prepare(id, None).await.unwrap();
@@ -399,7 +399,7 @@ async fn shutdown_deadline_cancels_the_model_and_its_claim_lapses() {
 
 #[tokio::test]
 async fn aborting_the_worker_cancels_children_and_recovers_by_expiry() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     storage.ingest(message(0)).await.unwrap();
     let started = Arc::new(Notify::new());
     let held = Arc::new(Semaphore::new(1));

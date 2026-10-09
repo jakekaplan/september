@@ -18,14 +18,13 @@ is the single statement of what is implemented. In short:
     needs a model.
   - A `Snapshot` zooms only into its frozen cover lines and their descendants.
 - `september` splits storage into `Archive` for clients and `Jobs` for workers.
-  The in-memory backend only stores state and calls the core. It prepares a
-  whole publication, then commits it: the summaries, both views, and any
-  snapshot waiting on that cutoff. The SQLite backend does the same inside one
-  immediate transaction, answering the core's lookups from the database and
-  restoring both views and snapshots from saved node covers. A Postgres backend
-  would follow it. Claims are leases on a running worker, so SQLite keeps them in
-  memory: after a restart every unpublished job is claimable again, with its
-  frozen context.
+  The SQLite backend only stores state and calls the core. Each change is one
+  immediate transaction: the summaries, both views, and any snapshot waiting on
+  that cutoff. It answers the core's lookups from the database and restores
+  views and snapshots from saved node covers. The same backend runs in memory
+  for volatile local use. A Postgres backend would follow it. Claims are leases
+  on a running worker, so they live in memory: after a restart every
+  unpublished job is claimable again, with its frozen context.
 - Claims are fenced by token, renewable for 60 seconds at a time, and capped at
   eight. A job's compaction-view context freezes on its first claim and
   survives expiry. Jobs whose context exceeds 32,000 bytes wait while other
@@ -238,9 +237,9 @@ Pure rules belong in `crates/memory`; effects and orchestration belong in
 `crates/service`. These are responsibilities, not pre-created modules or traits.
 Add modules alongside implementation and extract another crate only when a
 concrete dependency or ownership boundary warrants it. The local server
-entrypoint and model worker share service storage operations. In-memory
-deployments must share one backend in one process; a
-separate worker process requires the HTTP interface or persistent shared storage.
+entrypoint and model worker share service storage operations. SQLite storage,
+in memory or in a file, belongs to one process; a separate worker process
+requires the HTTP interface or shared Postgres storage.
 No client SDK or harness adapter belongs in the memory engine.
 
 ## Reliability and security

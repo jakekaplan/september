@@ -16,7 +16,7 @@ use september::{
     archive::{Kind, Message, Source},
     router,
     snapshots::Snapshot,
-    storage::{Archive, InMemory},
+    storage::{Archive, Sqlite},
 };
 use september_memory::Budget;
 use serde_json::{Value, json};
@@ -42,7 +42,7 @@ fn message(entry: u64, text: &str) -> Message {
 
 /// Four short messages whose small view merges into one `0+4` line.
 async fn frozen() -> (Router, Uuid) {
-    let storage = Arc::new(InMemory::new(Budget::new(30, 60).unwrap()));
+    let storage = Arc::new(Sqlite::in_memory(Budget::new(30, 60).unwrap()).unwrap());
     for (entry, text) in (0..).zip(["alpha", "beta", "gamma", "delta"]) {
         storage.ingest(message(entry, text)).await.unwrap();
     }

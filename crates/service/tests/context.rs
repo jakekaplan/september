@@ -18,7 +18,7 @@ use september::{
     jobs::{Claim, Completion, Job},
     router,
     snapshots::Snapshot,
-    storage::{Archive, InMemory, Jobs},
+    storage::{Archive, Jobs, Sqlite},
     worker::Worker,
 };
 use september_memory::Budget;
@@ -60,7 +60,7 @@ async fn summarize(job: Job) -> Result<String, Error> {
     ))
 }
 
-async fn publish(storage: &InMemory, claim: &Claim, text: &str) {
+async fn publish(storage: &Sqlite, claim: &Claim, text: &str) {
     storage
         .complete(Completion {
             range: claim.job.range,
@@ -78,7 +78,7 @@ async fn expire_claims() {
 
 #[tokio::test]
 async fn http_claim_has_prior_context_without_its_input_or_future() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     storage
         .ingest(message(0, "Use the memory backend first."))
         .await
@@ -121,7 +121,7 @@ async fn http_claim_has_prior_context_without_its_input_or_future() {
 
 #[tokio::test(start_paused = true)]
 async fn first_unbuilt_leaf_bounds_context_and_retries_keep_it_after_the_gap_fills() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     storage
         .ingest(message(0, &"old gap".repeat(100)))
         .await
@@ -156,7 +156,7 @@ async fn first_unbuilt_leaf_bounds_context_and_retries_keep_it_after_the_gap_fil
 
 #[tokio::test(start_paused = true)]
 async fn main_merge_rederives_context_but_preserves_already_claimed_context() {
-    let storage = InMemory::new(Budget::new(80, 300).unwrap());
+    let storage = Sqlite::in_memory(Budget::new(80, 300).unwrap()).unwrap();
     // Each fits verbatim, but not both together, so their parent is a job.
     let padding = "-".repeat(300);
     storage
@@ -191,7 +191,7 @@ async fn main_merge_rederives_context_but_preserves_already_claimed_context() {
 
 #[tokio::test]
 async fn smaller_view_batches_independently_and_counts_utf8_bytes() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     let text = "🙂".repeat(65);
     for entry in 0..160 {
         storage.ingest(message(entry, &text)).await.unwrap();
@@ -217,7 +217,7 @@ async fn smaller_view_batches_independently_and_counts_utf8_bytes() {
 
 #[tokio::test]
 async fn oversized_context_defers_jobs_while_ready_parents_make_progress() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     for entry in 0..400 {
         storage
             .ingest(message(entry, &"🙂".repeat(65)))
@@ -240,7 +240,7 @@ async fn oversized_context_defers_jobs_while_ready_parents_make_progress() {
 
 #[tokio::test(start_paused = true)]
 async fn eight_unbuilt_predecessors_block_a_leaf_even_after_their_claims_expire() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     for entry in 0..9 {
         storage
             .ingest(message(entry, &"long input".repeat(100)))
@@ -268,7 +268,7 @@ async fn eight_unbuilt_predecessors_block_a_leaf_even_after_their_claims_expire(
 
 #[tokio::test]
 async fn continuous_worker_receives_the_claims_historical_context() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     storage
         .ingest(message(0, "keep the earlier decision"))
         .await

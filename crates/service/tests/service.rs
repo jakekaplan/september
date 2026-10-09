@@ -18,7 +18,7 @@ use september::{
     jobs::{Claim, Completion, Input},
     router,
     snapshots::{Detail, Snapshot},
-    storage::{Archive, InMemory, Jobs},
+    storage::{Archive, Jobs, Sqlite},
 };
 use september_memory::{Budget, Node};
 use serde_json::{Value, json};
@@ -65,7 +65,7 @@ async fn publish(storage: &impl Jobs, claim: &Claim, text: &str) -> Result<(), E
 
 #[tokio::test]
 async fn source_retries_are_idempotent_and_snapshots_retrieve_originals() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     let original = message(0, "Use Postgres later.");
     let first = storage.ingest(original.clone()).await.unwrap();
     let retry = storage.ingest(original.clone()).await.unwrap();
@@ -101,7 +101,7 @@ async fn source_retries_are_idempotent_and_snapshots_retrieve_originals() {
 
 #[tokio::test]
 async fn concurrent_writers_assign_contiguous_ids_and_deduplicate() {
-    let storage = Arc::new(InMemory::default());
+    let storage = Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap());
     let mut tasks = Vec::new();
     for entry in 0..32 {
         for _ in 0..2 {
@@ -128,7 +128,7 @@ async fn concurrent_writers_assign_contiguous_ids_and_deduplicate() {
 
 #[tokio::test]
 async fn pending_snapshots_keep_their_cutoff_across_out_of_order_completion() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     storage.ingest(message(0, &"a".repeat(600))).await.unwrap();
     let first = Uuid::new_v4();
     assert!(matches!(
@@ -170,7 +170,7 @@ async fn pending_snapshots_keep_their_cutoff_across_out_of_order_completion() {
 
 #[tokio::test]
 async fn batch_merges_change_future_views_but_not_frozen_navigation() {
-    let storage = InMemory::new(Budget::new(80, 300).unwrap());
+    let storage = Sqlite::in_memory(Budget::new(80, 300).unwrap()).unwrap();
     // Each fits verbatim, but not both together, so their parent is a job.
     let padding = "-".repeat(300);
     storage
@@ -217,7 +217,7 @@ async fn batch_merges_change_future_views_but_not_frozen_navigation() {
 
 #[tokio::test(start_paused = true)]
 async fn expired_claims_are_recovered_and_stale_workers_cannot_publish() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     storage.ingest(message(0, &"x".repeat(600))).await.unwrap();
     let old = storage.claim().await.unwrap().unwrap();
     tokio::time::advance(Duration::from_secs(60)).await;
@@ -242,7 +242,7 @@ async fn expired_claims_are_recovered_and_stale_workers_cannot_publish() {
 
 #[tokio::test]
 async fn publication_schedules_each_parent_once_and_merges_through_multiple_levels() {
-    let storage = InMemory::new(Budget::new(30, 80).unwrap());
+    let storage = Sqlite::in_memory(Budget::new(30, 80).unwrap()).unwrap();
     // Every message and summary fits alone, but no pair joins verbatim.
     let long = "s".repeat(300);
     for entry in 0..4 {
@@ -274,7 +274,7 @@ async fn publication_schedules_each_parent_once_and_merges_through_multiple_leve
 
 #[tokio::test]
 async fn claims_are_bounded_and_oversized_completion_preserves_the_claim() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     for entry in 0..9 {
         storage
             .ingest(message(entry, &"x".repeat(600)))
@@ -298,7 +298,7 @@ async fn claims_are_bounded_and_oversized_completion_preserves_the_claim() {
 
 #[tokio::test]
 async fn invalid_messages_do_not_consume_ids_or_create_work() {
-    let storage = InMemory::default();
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     for text in [String::new(), "x".repeat(65_537)] {
         assert!(matches!(
             storage.ingest(message(0, &text)).await,
@@ -317,39 +317,13 @@ async fn invalid_messages_do_not_consume_ids_or_create_work() {
 }
 
 #[tokio::test]
-async fn fresh_backends_are_empty_and_capacity_rejections_leave_retries_working() {
-    let storage = InMemory::default();
+async fn each_memory_archive_starts_empty_and_says_it_is_volatile() {
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
     let id = Uuid::new_v4();
     storage.prepare(id, None).await.unwrap();
-    assert!(matches!(
-        InMemory::default().snapshot(id).await,
-        Err(Error::NotFound)
-    ));
-    for _ in 1..128 {
-        storage.prepare(Uuid::new_v4(), None).await.unwrap();
-    }
-    assert!(matches!(
-        storage.prepare(Uuid::new_v4(), None).await,
-        Err(Error::Capacity)
-    ));
-    assert_eq!(view(storage.prepare(id, None).await.unwrap()).0, 0);
-    for entry in 0..1024 {
-        storage
-            .ingest(message(entry, &"x".repeat(600)))
-            .await
-            .unwrap();
-    }
-    assert!(matches!(
-        storage.ingest(message(1024, "full")).await,
-        Err(Error::Capacity)
-    ));
-    assert!(
-        storage
-            .ingest(message(0, &"x".repeat(600)))
-            .await
-            .unwrap()
-            .duplicate
-    );
+    let other = Sqlite::in_memory(Budget::CHAT).unwrap();
+    assert!(matches!(other.snapshot(id).await, Err(Error::NotFound)));
+    assert!(!other.is_durable());
 }
 
 async fn request(
@@ -378,7 +352,7 @@ async fn request(
 
 #[tokio::test]
 async fn http_ingestion_freezing_zoom_and_error_boundaries() {
-    let app = router(Arc::new(InMemory::default()));
+    let app = router(Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap()));
     let original = serde_json::to_value(message(0, "Remember this")).unwrap();
     assert_eq!(
         request(&app, "POST", "/v1/messages", Some(original.clone()))
@@ -396,6 +370,11 @@ async fn http_ingestion_freezing_zoom_and_error_boundaries() {
     let (status, snapshot) = request(&app, "PUT", &path, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(snapshot["cutoff"], 1);
+    // A requested size must fit at least the empty view.
+    for (within, status) in [(5, StatusCode::BAD_REQUEST), (200, StatusCode::OK)] {
+        let sized = format!("/v1/snapshots/{}?within={within}", Uuid::new_v4());
+        assert_eq!(request(&app, "PUT", &sized, None).await.0, status);
+    }
     let (_, detail) = request(&app, "GET", &format!("{path}/zoom?start=0&length=1"), None).await;
     assert_eq!(detail["message"]["text"], "Remember this");
     for (range, status) in [
@@ -439,7 +418,7 @@ async fn http_ingestion_freezing_zoom_and_error_boundaries() {
 
 #[tokio::test]
 async fn http_pending_snapshot_becomes_ready_after_explicit_summary_completion() {
-    let app = router(Arc::new(InMemory::default()));
+    let app = router(Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap()));
     let original = serde_json::to_value(message(0, &"a".repeat(600))).unwrap();
     request(&app, "POST", "/v1/messages", Some(original)).await;
     let path = format!("/v1/snapshots/{}", Uuid::new_v4());
@@ -467,7 +446,7 @@ async fn http_pending_snapshot_becomes_ready_after_explicit_summary_completion()
 
 #[tokio::test]
 async fn http_rejects_browser_origins_and_nonlocal_hosts() {
-    let app = router(Arc::new(InMemory::default()));
+    let app = router(Arc::new(Sqlite::in_memory(Budget::CHAT).unwrap()));
     for (host, origin) in [
         ("attacker.example", None),
         ("localhost", Some("https://attacker.example")),

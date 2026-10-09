@@ -12,9 +12,7 @@ use crate::{
     snapshots::{Detail, Snapshot},
 };
 
-mod memory;
 mod sqlite;
-pub use memory::InMemory;
 pub use sqlite::{OpenError, Sqlite};
 
 /// Messages, interaction snapshots, and zoom: what clients use.

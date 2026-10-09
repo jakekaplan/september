@@ -1,8 +1,10 @@
 use tempfile::TempDir;
 
+use september_memory::SUMMARY_BYTES;
+
 use crate::{
     archive::{Kind, Source},
-    jobs::{Claim, Completion, Context},
+    jobs::{Claim, Completion, Context, Input, MAX_SUMMARY_BYTES},
     storage::Jobs,
 };
 
@@ -48,6 +50,17 @@ async fn finish(storage: &Sqlite, claim: &Claim, text: &str) -> Result<(), Error
             text: text.into(),
         })
         .await
+}
+
+fn node(start: u64, length: u64) -> Node {
+    Node::new(start, length).unwrap()
+}
+
+async fn text(storage: &Sqlite, node: Node) -> Option<String> {
+    let state = storage.state.lock().await;
+    summary_text(&state.db, node)
+        .unwrap()
+        .map(|text| text.to_string())
 }
 
 fn view(snapshot: &Snapshot) -> &str {
@@ -220,4 +233,74 @@ async fn a_second_server_cannot_open_a_held_archive() {
     );
     drop(storage);
     Sqlite::open(&path, Budget::CHAT).unwrap();
+}
+
+#[tokio::test]
+async fn short_messages_and_pairs_publish_verbatim_without_jobs() {
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
+    for (entry, note) in (0..).zip(["first", "second", "third", "fourth"]) {
+        storage.ingest(message(entry, note.into())).await.unwrap();
+    }
+    assert!(storage.claim().await.unwrap().is_none());
+    assert_eq!(text(&storage, node(0, 1)).await.unwrap(), "user: first");
+    assert_eq!(
+        text(&storage, node(0, 4)).await.unwrap(),
+        "user: first\nuser: second\nuser: third\nuser: fourth"
+    );
+}
+
+#[tokio::test]
+async fn the_first_parent_too_long_to_join_becomes_the_only_job() {
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
+    for entry in 0..2 {
+        storage
+            .ingest(message(entry, "y".repeat(300)))
+            .await
+            .unwrap();
+    }
+    let claim = storage.claim().await.unwrap().unwrap();
+    assert_eq!(Node::try_from(claim.job.range).unwrap(), node(0, 2));
+    assert!(matches!(claim.job.input, Input::Children { .. }));
+    assert!(storage.claim().await.unwrap().is_none());
+    assert_eq!(text(&storage, node(0, 2)).await, None);
+}
+
+#[tokio::test]
+async fn completions_may_exceed_the_target_but_not_the_ceiling() {
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
+    storage.ingest(message(0, "x".repeat(600))).await.unwrap();
+    let claim = storage.claim().await.unwrap().unwrap();
+    let ceiling = "z".repeat(MAX_SUMMARY_BYTES + 1);
+    assert!(matches!(
+        finish(&storage, &claim, &ceiling).await,
+        Err(Error::Invalid)
+    ));
+    let oversized = "z".repeat(SUMMARY_BYTES + 100);
+    finish(&storage, &claim, &oversized).await.unwrap();
+    assert_eq!(text(&storage, node(0, 1)).await, Some(oversized));
+}
+
+#[tokio::test]
+async fn a_waiting_sized_snapshot_is_frozen_at_its_own_size() {
+    let storage = Sqlite::in_memory(Budget::CHAT).unwrap();
+    for entry in 0..8 {
+        let note = message(entry, format!("note {entry}"));
+        storage.ingest(note).await.unwrap();
+    }
+    storage.ingest(message(8, "y".repeat(600))).await.unwrap();
+    let id = Uuid::new_v4();
+    assert!(matches!(
+        storage.prepare(id, Some(within(60))).await.unwrap(),
+        Snapshot::Pending { cutoff: 9, .. }
+    ));
+    let claim = storage.claim().await.unwrap().unwrap();
+    finish(&storage, &claim, "short").await.unwrap();
+    let Snapshot::Ready { nodes, .. } = storage.snapshot(id).await.unwrap() else {
+        panic!("the waiting snapshot is ready");
+    };
+    let ranges: Vec<_> = nodes
+        .iter()
+        .map(|range| (range.start, range.length))
+        .collect();
+    assert_eq!(ranges, [(0, 8), (8, 1)]);
 }
