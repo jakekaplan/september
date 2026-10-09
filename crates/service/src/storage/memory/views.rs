@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use september_memory::{Budget, Node, Snapshot as Frozen, Summary, View};
 use uuid::Uuid;
 
 use crate::{Error, jobs::Context, snapshots::Snapshot};
-
-use super::Completed;
 
 pub(super) struct Views {
     live: View,
@@ -83,57 +82,35 @@ impl Views {
             .ok_or(Error::NotReady)
     }
 
-    /// Prepare view changes against one prospective publication, without mutating storage.
+    /// Prepare view changes for a publication, without mutating storage.
+    /// `built` must include the publication's own summaries.
     pub(super) fn advance(
         &self,
-        summaries: &BTreeMap<Node, Completed>,
-        node: Node,
-        text: &str,
+        built: impl Fn(Node) -> Option<Arc<str>>,
     ) -> Result<Projection, Error> {
-        let lookup = |range: Node| -> Option<&str> {
-            if range == node {
-                Some(text)
-            } else {
-                summaries.get(&range).map(|summary| summary.text.as_str())
-            }
-        };
+        self.project(&built)
+            .map_err(|error| Error::internal("advance views", error))
+    }
+
+    fn project(
+        &self,
+        built: &impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<Projection, september_memory::Error> {
         let mut live = self.live.clone();
         let mut compaction = self.compaction.clone();
         let mut ready = Vec::new();
-        let mut parents = BTreeMap::new();
-        // Load ancestors of the actual cover, including parents enabled later in a batch.
-        for summary in live.summaries().iter().chain(compaction.summaries()) {
-            add_parents(summary.node(), &lookup, &mut parents);
-        }
-        let previous_lines = live.summaries().len();
-        live.compact(&parents)
-            .map_err(|error| Error::internal("compact live view", error))?;
-        if live.summaries().len() < previous_lines {
-            compaction = live.clone();
-            compaction.resize(Budget::COMPACTION, &parents)?;
-        } else {
-            compaction.compact(&parents)?;
-        }
+        // A new parent can resume an unfinished batch before any leaf arrives.
+        let merges = live.compact(built)?;
+        follow(&mut compaction, &live, merges, None, built)?;
         loop {
             if self.pending.contains_key(&live.cutoff()) {
-                ready.push((
-                    live.cutoff(),
-                    live.freeze(live.cutoff())
-                        .map_err(|error| Error::internal("freeze pending snapshot", error))?,
-                ));
+                ready.push((live.cutoff(), live.freeze(live.cutoff())?));
             }
             let leaf = Node::new(live.cutoff(), 1)?;
-            let Some(text) = lookup(leaf) else { break };
-            add_parents(leaf, &lookup, &mut parents);
-            let previous_lines = live.summaries().len();
-            live.append(Summary::new(leaf, text), &parents)
-                .map_err(|error| Error::internal("advance live view", error))?;
-            if live.summaries().len() <= previous_lines {
-                compaction = live.clone();
-                compaction.resize(Budget::COMPACTION, &parents)?;
-            } else {
-                compaction.append(Summary::new(leaf, text), &parents)?;
-            }
+            let Some(text) = built(leaf) else { break };
+            let leaf = Summary::new(leaf, text);
+            let merges = live.append(leaf.clone(), built)?;
+            follow(&mut compaction, &live, merges, Some(leaf), built)?;
         }
         Ok(Projection {
             live,
@@ -176,18 +153,23 @@ impl Views {
     }
 }
 
-fn add_parents<'a>(
-    mut node: Node,
-    lookup: &impl Fn(Node) -> Option<&'a str>,
-    parents: &mut BTreeMap<Node, String>,
-) {
-    while let Ok(parent) = node.parent() {
-        // A missing parent cannot have a completed ancestor: publication enforces children.
-        let Some(text) = lookup(parent) else { break };
-        if parents.contains_key(&parent) {
-            break;
-        }
-        parents.insert(parent, text.to_owned());
-        node = parent;
+/// Keep the compaction view on the live view's lines. After a live merge it is
+/// derived again and batched to its own target; otherwise it takes the same
+/// new line, or resumes its own unfinished batch.
+fn follow(
+    compaction: &mut View,
+    live: &View,
+    live_merges: usize,
+    leaf: Option<Summary>,
+    built: &impl Fn(Node) -> Option<Arc<str>>,
+) -> Result<(), september_memory::Error> {
+    if live_merges > 0 {
+        *compaction = live.clone();
+        compaction.resize(Budget::COMPACTION, built)?;
+    } else if let Some(leaf) = leaf {
+        compaction.append(leaf, built)?;
+    } else {
+        compaction.compact(built)?;
     }
+    Ok(())
 }

@@ -12,14 +12,23 @@ use axum::{
 use september::{
     router, serve,
     storage::InMemory,
-    summarizer::{Provider, Summarizer},
+    summarizer::Summarizer,
     worker::{self, Worker},
 };
 use tokio::{net::TcpListener, signal, sync::watch, task::JoinSet};
+use tracing::Level;
+use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt().with_target(false).init();
+    // Docket logs every task run, including the dispatcher's polls; keep its failures.
+    let levels = Targets::new()
+        .with_default(Level::INFO)
+        .with_target("docket", Level::WARN);
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_target(false))
+        .with(levels)
+        .init();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -37,19 +46,14 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         settings::Summarizer::Fake => {
             Some(Worker::memory(Arc::clone(&storage), worker::fake).await?)
         }
-        mode => {
-            let provider = if mode == settings::Summarizer::Openai {
-                Provider::Openai
-            } else {
-                Provider::Anthropic
-            };
-            let api_key = settings.api_key()?;
+        settings::Summarizer::Model(provider) => {
+            let api_key = settings::api_key(provider)?;
             let model = settings.model.ok_or("model setting missing")?;
             let summarizer = Summarizer::new(provider, model, api_key)?;
             Some(
-                Worker::memory(Arc::clone(&storage), move |input, context| {
+                Worker::memory(Arc::clone(&storage), move |job| {
                     let summarizer = summarizer.clone();
-                    async move { summarizer.summarize(input, context).await }
+                    async move { summarizer.summarize(&job).await }
                 })
                 .await?,
             )

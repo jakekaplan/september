@@ -13,13 +13,13 @@ use axum::{
 };
 use september::{
     archive::{Kind, Message, Source},
-    jobs::{Claim, Completion},
+    jobs::{Claim, Completion, Job},
     router,
     snapshots::Snapshot,
     storage::{InMemory, Storage},
     worker::{Worker, fake},
 };
-use september_memory::{Budget, Node};
+use september_memory::Budget;
 use tokio::sync::{mpsc, oneshot};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -44,7 +44,7 @@ fn message(entry: usize, text: &str) -> Message {
 async fn publish(storage: &InMemory, claim: &Claim, text: &str) {
     storage
         .complete(Completion {
-            range: claim.range,
+            range: claim.job.range,
             token: claim.token,
             text: text.into(),
         })
@@ -52,15 +52,9 @@ async fn publish(storage: &InMemory, claim: &Claim, text: &str) {
         .unwrap();
 }
 
-async fn release(storage: &InMemory, claim: &Claim) {
-    storage
-        .release(
-            Node::try_from(claim.range).unwrap(),
-            claim.token,
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
+/// Let every live claim lapse, so its job becomes claimable again.
+async fn expire_claims() {
+    tokio::time::advance(Duration::from_secs(61)).await;
 }
 
 #[tokio::test]
@@ -87,11 +81,23 @@ async fn http_claim_has_prior_context_without_its_input_or_future() {
     assert_eq!(response.status(), 200);
     let claim: Claim =
         serde_json::from_slice(&to_bytes(response.into_body(), 100_000).await.unwrap()).unwrap();
-    assert_eq!(claim.context.cutoff, 1);
-    assert!(claim.context.view.contains("Use the memory backend first."));
-    assert!(claim.context.view.contains("september"));
-    assert!(!claim.context.view.contains("current input"));
-    assert!(!claim.context.view.contains("future decision"));
+    assert_eq!(claim.job.context.cutoff, 1);
+    assert!(
+        claim
+            .job
+            .context
+            .view
+            .contains("Use the memory backend first.")
+    );
+    assert!(
+        claim
+            .job
+            .context
+            .view
+            .contains("0+1|user: Use the memory backend first.")
+    );
+    assert!(!claim.job.context.view.contains("current input"));
+    assert!(!claim.job.context.view.contains("future decision"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -108,61 +114,70 @@ async fn first_unbuilt_leaf_bounds_context_and_retries_keep_it_after_the_gap_fil
         .unwrap();
     let first = storage.claim().await.unwrap().unwrap();
     let later = storage.claim().await.unwrap().unwrap();
-    assert_eq!(later.range.start, 2);
-    assert_eq!(later.context.cutoff, 0);
-    assert_eq!(later.context.view, "<chat>\n</chat>");
-    publish(&storage, &first, "gap filled").await;
+    assert_eq!(later.job.range.start, 2);
+    assert_eq!(later.job.context.cutoff, 0);
+    assert_eq!(later.job.context.view, "<chat>\n</chat>");
+    // Long enough that the pair cannot be joined verbatim.
+    publish(&storage, &first, &format!("gap filled {}", "g".repeat(500))).await;
     let parent = storage.claim().await.unwrap().unwrap();
-    assert_eq!(parent.range.length, 2);
-    assert_eq!(parent.context.cutoff, 2);
-    assert!(parent.context.view.contains("gap filled"));
-    assert!(parent.context.view.contains("ready after gap"));
+    assert_eq!(parent.job.range.length, 2);
+    assert_eq!(parent.job.context.cutoff, 2);
+    assert!(parent.job.context.view.contains("gap filled"));
+    assert!(parent.job.context.view.contains("ready after gap"));
     publish(&storage, &parent, "past pair").await;
-    release(&storage, &later).await;
+    expire_claims().await;
     let retried = storage.claim().await.unwrap().unwrap();
     assert_ne!(retried.token, later.token);
-    assert_eq!(retried.context, later.context);
-    tokio::time::advance(Duration::from_secs(61)).await;
+    assert_eq!(retried.job.context, later.job.context);
+    expire_claims().await;
     let expired = storage.claim().await.unwrap().unwrap();
     assert_ne!(expired.token, retried.token);
-    assert_eq!(expired.context, later.context);
+    assert_eq!(expired.job.context, later.job.context);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn main_merge_rederives_context_but_preserves_already_claimed_context() {
     let storage = InMemory::new(Budget::new(80, 300).unwrap());
-    storage.ingest(message(0, "first decision")).await.unwrap();
-    storage.ingest(message(1, "second decision")).await.unwrap();
+    // Each fits verbatim, but not both together, so their parent is a job.
+    let padding = "-".repeat(300);
+    storage
+        .ingest(message(0, &format!("first decision {padding}")))
+        .await
+        .unwrap();
+    storage
+        .ingest(message(1, &format!("second decision {padding}")))
+        .await
+        .unwrap();
     storage
         .ingest(message(2, &"input".repeat(150)))
         .await
         .unwrap();
     let parent = storage.claim().await.unwrap().unwrap();
     let leaf = storage.claim().await.unwrap().unwrap();
-    assert!(leaf.context.view.contains("first decision"));
+    assert!(leaf.job.context.view.contains("first decision"));
     publish(&storage, &parent, "merged decisions").await;
-    release(&storage, &leaf).await;
+    expire_claims().await;
     let retried = storage.claim().await.unwrap().unwrap();
-    assert_eq!(retried.context, leaf.context);
+    assert_eq!(retried.job.context, leaf.job.context);
     publish(&storage, &retried, "third decision").await;
     storage
         .ingest(message(3, &"next".repeat(200)))
         .await
         .unwrap();
     let next = storage.claim().await.unwrap().unwrap();
-    assert_eq!(next.context.cutoff, 3);
-    assert!(next.context.view.contains("0+2|merged decisions"));
-    assert!(!next.context.view.contains("first decision"));
+    assert_eq!(next.job.context.cutoff, 3);
+    assert!(next.job.context.view.contains("0+2|merged decisions"));
+    assert!(!next.job.context.view.contains("first decision"));
 }
 
 #[tokio::test]
 async fn smaller_view_batches_independently_and_counts_utf8_bytes() {
     let storage = InMemory::default();
     let text = "🙂".repeat(65);
-    for entry in 0..96 {
+    for entry in 0..160 {
         storage.ingest(message(entry, &text)).await.unwrap();
         while let Some(claim) = storage.claim().await.unwrap() {
-            assert!(claim.context.view.len() <= 32_000);
+            assert!(claim.job.context.view.len() <= 32_000);
             publish(&storage, &claim, &"é".repeat(200)).await;
         }
     }
@@ -171,14 +186,14 @@ async fn smaller_view_batches_independently_and_counts_utf8_bytes() {
     };
     assert!(view.len() > 32_000);
     storage
-        .ingest(message(96, &"probe".repeat(150)))
+        .ingest(message(160, &"probe".repeat(150)))
         .await
         .unwrap();
     let probe = storage.claim().await.unwrap().unwrap();
-    assert_eq!(probe.context.cutoff, 96);
-    assert!(probe.context.view.len() <= 32_000);
-    assert!(probe.context.view.contains("é"));
-    assert!(probe.context.view.contains("95+1|"));
+    assert_eq!(probe.job.context.cutoff, 160);
+    assert!(probe.job.context.view.len() <= 32_000);
+    assert!(probe.job.context.view.contains("é"));
+    assert!(probe.job.context.view.contains("159+1|"));
 }
 
 #[tokio::test]
@@ -192,9 +207,12 @@ async fn oversized_context_defers_jobs_while_ready_parents_make_progress() {
     }
     let mut completed = 0;
     while let Some(claim) = storage.claim().await.unwrap() {
-        assert!(claim.range.length > 1);
-        assert!(claim.context.view.len() <= 32_000);
-        assert_eq!(claim.context.cutoff, claim.range.start + claim.range.length);
+        assert!(claim.job.range.length > 1);
+        assert!(claim.job.context.view.len() <= 32_000);
+        assert_eq!(
+            claim.job.context.cutoff,
+            claim.job.range.start + claim.job.range.length
+        );
         publish(&storage, &claim, &"é".repeat(200)).await;
         completed += 1;
     }
@@ -202,7 +220,7 @@ async fn oversized_context_defers_jobs_while_ready_parents_make_progress() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn eight_unbuilt_predecessors_block_a_leaf_even_while_claims_back_off() {
+async fn eight_unbuilt_predecessors_block_a_leaf_even_after_their_claims_expire() {
     let storage = InMemory::default();
     for entry in 0..9 {
         storage
@@ -210,23 +228,23 @@ async fn eight_unbuilt_predecessors_block_a_leaf_even_while_claims_back_off() {
             .await
             .unwrap();
     }
-    let first = storage.claim().await.unwrap().unwrap();
-    for _ in 1..8 {
+    for _ in 0..8 {
+        storage.claim().await.unwrap().unwrap();
+    }
+    expire_claims().await;
+    let mut first = None;
+    for _ in 0..8 {
         let claim = storage.claim().await.unwrap().unwrap();
-        storage
-            .release(
-                Node::try_from(claim.range).unwrap(),
-                claim.token,
-                Duration::from_secs(30),
-            )
-            .await
-            .unwrap();
+        assert!(claim.job.range.start < 8);
+        if claim.job.range.start == 0 {
+            first = Some(claim);
+        }
     }
     assert!(storage.claim().await.unwrap().is_none());
-    publish(&storage, &first, "first complete").await;
+    publish(&storage, &first.unwrap(), "first complete").await;
     let ninth = storage.claim().await.unwrap().unwrap();
-    assert_eq!(ninth.range.start, 8);
-    assert_eq!(ninth.context.cutoff, 1);
+    assert_eq!(ninth.job.range.start, 8);
+    assert_eq!(ninth.job.context.cutoff, 1);
 }
 
 #[tokio::test]
@@ -241,11 +259,11 @@ async fn continuous_worker_receives_the_claims_historical_context() {
         .await
         .unwrap();
     let (contexts, mut received) = mpsc::channel(8);
-    let worker = Worker::memory(Arc::clone(&storage), move |input, context| {
+    let worker = Worker::memory(Arc::clone(&storage), move |job: Job| {
         let contexts = contexts.clone();
         async move {
-            contexts.send(context.clone()).await.unwrap();
-            fake(input, context).await
+            contexts.send(job.context.clone()).await.unwrap();
+            fake(job).await
         }
     })
     .await

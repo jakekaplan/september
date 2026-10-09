@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
+use crate::{Error, jobs::SUMMARY_BYTES};
 
 /// Stable adapter identity used to deduplicate uploads.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -73,11 +73,27 @@ impl Message {
         Ok(())
     }
 
-    pub(crate) fn verbatim_summary(&self) -> Result<Option<String>, Error> {
-        // Include provenance in the model-visible line, not only in archive metadata.
-        let text = serde_json::to_string(self)
-            .map_err(|error| Error::internal("encode verbatim summary", error))?;
-        Ok((text.len() <= 512).then_some(text))
+    /// The text tagged with its kind, as `user: ...`: how a message reads in memory.
+    /// Provenance and timestamps stay in the archive, returned by zoom.
+    pub(crate) fn tagged_text(&self) -> String {
+        format!("{}: {}", self.kind.as_str(), self.text)
+    }
+
+    /// A short message is its own summary, word for word, with no model call.
+    pub(crate) fn verbatim_summary(&self) -> Option<String> {
+        Some(self.tagged_text()).filter(|text| text.len() <= SUMMARY_BYTES)
+    }
+}
+
+impl Kind {
+    /// The wire name, also used to tag each item in memory.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+        }
     }
 }
 

@@ -46,5 +46,10 @@ jobs:
       - name: Tests
         run: cargo test --locked --workspace
 
+      - name: Documentation
+        run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: Dependency policy
         run: cargo deny --locked check

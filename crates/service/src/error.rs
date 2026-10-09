@@ -1,21 +1,28 @@
-use std::{error, fmt};
+use std::error;
 
 /// Service failures. Internal sources are retained for diagnostics, not HTTP output.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The request violates a size, identity, or range constraint.
+    #[error("invalid request")]
     Invalid,
     /// A source identity or claim conflicts with existing state.
+    #[error("identity or claim conflict")]
     Conflict,
     /// The requested snapshot does not exist in this archive instance.
+    #[error("snapshot not found")]
     NotFound,
     /// Required summaries have not completed.
+    #[error("snapshot is waiting for summaries")]
     NotReady,
     /// The requested range is not within the frozen cover.
+    #[error("range is outside the frozen cover")]
     OutsideSnapshot,
     /// The bounded backend is full.
+    #[error("storage capacity reached")]
     Capacity,
     /// An internal invariant or storage operation failed.
+    #[error("internal service failure")]
     Internal {
         /// Operation that failed, for structured server diagnostics.
         operation: &'static str,
@@ -36,29 +43,6 @@ impl Error {
     }
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Invalid => "invalid request",
-            Self::Conflict => "identity or claim conflict",
-            Self::NotFound => "snapshot not found",
-            Self::NotReady => "snapshot is waiting for summaries",
-            Self::OutsideSnapshot => "range is outside the frozen cover",
-            Self::Capacity => "storage capacity reached",
-            Self::Internal { .. } => "internal service failure",
-        })
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Self::Internal { source, .. } => Some(source.as_ref()),
-            _ => None,
-        }
-    }
-}
-
 impl From<september_memory::Error> for Error {
     fn from(error: september_memory::Error) -> Self {
         match error {
@@ -69,22 +53,13 @@ impl From<september_memory::Error> for Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum Invariant {
+    #[error("missing archived message {0}")]
     MissingMessage(u64),
+    #[error("missing completed summary {0}")]
     MissingSummary(september_memory::Node),
 }
-
-impl fmt::Display for Invariant {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingMessage(id) => write!(f, "missing archived message {id}"),
-            Self::MissingSummary(node) => write!(f, "missing completed summary {node}"),
-        }
-    }
-}
-
-impl error::Error for Invariant {}
 
 #[cfg(test)]
 mod tests {

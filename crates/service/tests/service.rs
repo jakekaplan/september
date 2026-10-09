@@ -56,7 +56,7 @@ fn view(snapshot: Snapshot) -> (u64, String) {
 async fn publish(storage: &impl Storage, claim: &Claim, text: &str) -> Result<(), Error> {
     storage
         .complete(Completion {
-            range: claim.range,
+            range: claim.job.range,
             token: claim.token,
             text: text.into(),
         })
@@ -141,30 +141,41 @@ async fn pending_snapshots_keep_their_cutoff_across_out_of_order_completion() {
     storage.prepare(second).await.unwrap();
     let a = storage.claim().await.unwrap().unwrap();
     let b = storage.claim().await.unwrap().unwrap();
-    assert!(matches!(&a.input, Input::Message { message } if message.text.len() == 600));
-    publish(&storage, &b, "second summary").await.unwrap();
+    assert!(matches!(&a.job.input, Input::Message { message } if message.text.len() == 600));
+    // Too long to join verbatim, so their parent becomes a job.
+    let padding = "-".repeat(300);
+    publish(&storage, &b, &format!("second summary {padding}"))
+        .await
+        .unwrap();
     assert!(matches!(
         storage.snapshot(first).await.unwrap(),
         Snapshot::Pending { cutoff: 1, .. }
     ));
     assert!(storage.claim().await.unwrap().is_none()); // parent needs both children
-    publish(&storage, &a, "first summary").await.unwrap();
+    publish(&storage, &a, &format!("first summary {padding}"))
+        .await
+        .unwrap();
     let (cutoff, first_view) = view(storage.snapshot(first).await.unwrap());
     assert_eq!(cutoff, 1);
     assert!(first_view.contains("first summary"));
     assert!(!first_view.contains("second summary"));
     assert_eq!(view(storage.snapshot(second).await.unwrap()).0, 2);
     let parent = storage.claim().await.unwrap().unwrap();
-    assert_eq!(Node::try_from(parent.range).unwrap(), node(0, 2));
-    assert!(matches!(parent.input, Input::Children { .. }));
+    assert_eq!(Node::try_from(parent.job.range).unwrap(), node(0, 2));
+    assert!(matches!(parent.job.input, Input::Children { .. }));
 }
 
 #[tokio::test]
 async fn batch_merges_change_future_views_but_not_frozen_navigation() {
     let storage = InMemory::new(Budget::new(80, 300).unwrap());
-    storage.ingest(message(0, "Use Postgres")).await.unwrap();
+    // Each fits verbatim, but not both together, so their parent is a job.
+    let padding = "-".repeat(300);
     storage
-        .ingest(message(1, "Do not add Redis"))
+        .ingest(message(0, &format!("Use Postgres {padding}")))
+        .await
+        .unwrap();
+    storage
+        .ingest(message(1, &format!("Do not add Redis {padding}")))
         .await
         .unwrap();
     let old = Uuid::new_v4();
@@ -229,18 +240,20 @@ async fn expired_claims_are_recovered_and_stale_workers_cannot_publish() {
 #[tokio::test]
 async fn publication_schedules_each_parent_once_and_merges_through_multiple_levels() {
     let storage = InMemory::new(Budget::new(30, 80).unwrap());
+    // Every message and summary fits alone, but no pair joins verbatim.
+    let long = "s".repeat(300);
     for entry in 0..4 {
-        storage.ingest(message(entry, "source")).await.unwrap();
+        storage.ingest(message(entry, &long)).await.unwrap();
     }
     let left = storage.claim().await.unwrap().unwrap();
     let right = storage.claim().await.unwrap().unwrap();
     assert!(storage.claim().await.unwrap().is_none());
-    publish(&storage, &left, "summary").await.unwrap();
-    publish(&storage, &left, "summary").await.unwrap();
+    publish(&storage, &left, &long).await.unwrap();
+    publish(&storage, &left, &long).await.unwrap();
     assert!(storage.claim().await.unwrap().is_none());
-    publish(&storage, &right, "summary").await.unwrap();
+    publish(&storage, &right, &long).await.unwrap();
     let root = storage.claim().await.unwrap().unwrap();
-    assert_eq!(Node::try_from(root.range).unwrap(), node(0, 4));
+    assert_eq!(Node::try_from(root.job.range).unwrap(), node(0, 4));
     publish(&storage, &root, "summary").await.unwrap();
     assert!(storage.claim().await.unwrap().is_none());
     let id = Uuid::new_v4();
@@ -271,10 +284,10 @@ async fn claims_are_bounded_and_oversized_completion_preserves_the_claim() {
     }
     assert!(storage.claim().await.unwrap().is_none());
     assert!(matches!(
-        publish(&storage, &claims[0], &"🙂".repeat(129)).await,
+        publish(&storage, &claims[0], &"🙂".repeat(257)).await,
         Err(Error::Invalid)
     ));
-    publish(&storage, &claims[0], &"🙂".repeat(128))
+    publish(&storage, &claims[0], &"🙂".repeat(256))
         .await
         .unwrap();
     assert!(storage.claim().await.unwrap().is_some());

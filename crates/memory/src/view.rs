@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::{Error, Node, Summary};
 
@@ -132,8 +132,10 @@ impl View {
     /// Append the next completed leaf and advance any required batch.
     ///
     /// Below the trigger and outside a pending batch, only the final line is
-    /// added. Supply ready parents as described by [`Self::compact`]. The owned
-    /// candidate is prepared once and committed only after compaction succeeds.
+    /// added. Look up built parents as described by [`Self::compact`].
+    ///
+    /// Returns the number of merges, so callers can tell whether earlier lines
+    /// changed.
     ///
     /// # Errors
     ///
@@ -143,8 +145,8 @@ impl View {
     pub fn append(
         &mut self,
         leaf: Summary,
-        ready_parents: &BTreeMap<Node, String>,
-    ) -> Result<(), Error> {
+        built: impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<usize, Error> {
         if leaf.node().length() != 1 {
             return Err(Error::InvalidLeaf(leaf.node()));
         }
@@ -153,29 +155,27 @@ impl View {
         }
         let mut candidate = self.clone();
         candidate.summaries.push(leaf);
-        *self = candidate.compacted(ready_parents)?;
-        Ok(())
+        self.commit(candidate, &built)
     }
 
-    /// Advance a triggered or unfinished batch using supplied ready parents.
+    /// Advance a triggered or unfinished batch, returning the number of merges.
     ///
-    /// Supply completed parent text for every eligible range, including parents
-    /// enabled by earlier merges in this batch. Absence means not ready, not an
-    /// unchecked cache miss. Publication must already enforce immutable text and
-    /// completed children; this operation does not load or validate descendants.
+    /// `built` returns a parent's completed text, or `None` while that parent is
+    /// unbuilt. It must answer for every range, including parents enabled by
+    /// earlier merges in this batch. Publication must already enforce immutable
+    /// text and completed children; this operation does not load descendants.
     ///
     /// Rank by `(cutoff - pair_last_message) / child_length`, comparing exact
     /// integers and choosing the oldest pair on ties. Stop at the target or when
-    /// no eligible ready parent remains. A blocked batch retains its shrinking
-    /// state even below the trigger, and can resume when more parents are ready.
+    /// no built parent remains. A blocked batch retains its shrinking state even
+    /// below the trigger, and can resume when more parents are built.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Overflow`] for an unrepresentable rendered size. Failure
     /// leaves this view unchanged. A blocked batch is not an error.
-    pub fn compact(&mut self, ready_parents: &BTreeMap<Node, String>) -> Result<(), Error> {
-        *self = self.clone().compacted(ready_parents)?;
-        Ok(())
+    pub fn compact(&mut self, built: impl Fn(Node) -> Option<Arc<str>>) -> Result<usize, Error> {
+        self.commit(self.clone(), &built)
     }
 
     /// Select a historical prefix ending at an existing cover boundary.
@@ -211,28 +211,38 @@ impl View {
     ///
     /// # Errors
     /// Returns [`Error::Overflow`] for an unrepresentable size. Failure leaves
-    /// this view unchanged; missing parents retain an unfinished batch.
+    /// this view unchanged; unbuilt parents retain an unfinished batch.
     pub fn resize(
         &mut self,
         budget: Budget,
-        ready_parents: &BTreeMap<Node, String>,
-    ) -> Result<(), Error> {
+        built: impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<usize, Error> {
         let mut candidate = self.clone();
         candidate.budget = budget;
         candidate.shrinking = true;
-        *self = candidate.compacted(ready_parents)?;
-        Ok(())
+        self.commit(candidate, &built)
     }
 
-    fn compacted(mut self, ready_parents: &BTreeMap<Node, String>) -> Result<Self, Error> {
+    /// Batch `candidate` and replace this view only if every step succeeds.
+    fn commit(
+        &mut self,
+        mut candidate: Self,
+        built: &impl Fn(Node) -> Option<Arc<str>>,
+    ) -> Result<usize, Error> {
+        let merges = candidate.batch(built)?;
+        *self = candidate;
+        Ok(merges)
+    }
+
+    fn batch(&mut self, built: &impl Fn(Node) -> Option<Arc<str>>) -> Result<usize, Error> {
         let mut bytes = self.rendered_bytes()?;
         if !self.shrinking && bytes <= self.budget.trigger {
-            return Ok(self);
+            return Ok(0);
         }
         let cutoff = self.cutoff();
+        let mut merges = 0;
         while bytes > self.budget.target {
-            let Some((index, parent)) = most_due_pair(&self.summaries, cutoff, ready_parents)
-            else {
+            let Some((index, parent)) = most_due_pair(&self.summaries, cutoff, built) else {
                 break;
             };
             let removed = self.summaries[index]
@@ -246,9 +256,10 @@ impl View {
                 .ok_or(Error::Overflow)?;
             self.summaries[index] = parent;
             self.summaries.remove(index + 1);
+            merges += 1;
         }
         self.shrinking = bytes > self.budget.target;
-        Ok(self)
+        Ok(merges)
     }
 
     /// Count every rendered UTF-8 byte, including range headers and `<chat>` tags.
@@ -287,9 +298,9 @@ impl View {
 fn most_due_pair(
     summaries: &[Summary],
     cutoff: u64,
-    ready_parents: &BTreeMap<Node, String>,
+    built: &impl Fn(Node) -> Option<Arc<str>>,
 ) -> Option<(usize, Summary)> {
-    let mut best: Option<(usize, Node, &str, u128, u128)> = None;
+    let mut best: Option<(usize, Summary, u128, u128)> = None;
     for (index, pair) in summaries.windows(2).enumerate() {
         let [left, right] = [pair[0].node(), pair[1].node()];
         if left.length() != right.length() {
@@ -299,17 +310,19 @@ fn most_due_pair(
         if parent.children() != Some([left, right]) {
             continue;
         }
-        let Some(text) = ready_parents.get(&parent) else {
-            continue;
-        };
         // `last` is inclusive: using the exclusive end changes cross-level rank.
         let age = u128::from(cutoff - (right.end() - 1));
         let width = u128::from(left.length());
-        if best.is_none_or(|(_, _, _, best_age, best_width)| age * best_width > best_age * width) {
-            best = Some((index, parent, text, age, width));
+        if best
+            .as_ref()
+            .is_some_and(|(_, _, best_age, best_width)| age * best_width <= best_age * width)
+        {
+            continue;
         }
+        let Some(text) = built(parent) else { continue };
+        best = Some((index, Summary::new(parent, text), age, width));
     }
-    best.map(|(index, node, text, _, _)| (index, Summary::new(node, text)))
+    best.map(|(index, parent, _, _)| (index, parent))
 }
 
 #[cfg(test)]

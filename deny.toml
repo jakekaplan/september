@@ -66,6 +66,8 @@ allow = ["CDLA-Permissive-2.0"]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Unpublished workspace crates depend on each other by path alone.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

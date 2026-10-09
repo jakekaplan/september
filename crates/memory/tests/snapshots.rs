@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use september_memory::{Budget, Error, Node, Summary, View, Zoom};
 
@@ -12,6 +13,14 @@ fn node(start: u64, length: u64) -> Node {
 
 fn nodes(view: &View) -> Vec<Node> {
     view.summaries().iter().map(Summary::node).collect()
+}
+
+fn none(_: Node) -> Option<Arc<str>> {
+    None
+}
+
+fn lookup(parents: &BTreeMap<Node, String>) -> impl Fn(Node) -> Option<Arc<str>> + '_ {
+    |node| parents.get(&node).map(|text| Arc::from(text.as_str()))
 }
 
 // These are supplied ready facts, not a worker or a full-history tree replica.
@@ -38,7 +47,7 @@ fn frozen_snapshot_survives_new_messages_and_live_view_merges() {
         );
         view.append(
             Summary::new(node(id, 1), "0123456789"),
-            &ready_parents(id + 1),
+            lookup(&ready_parents(id + 1)),
         )
         .unwrap();
     }
@@ -51,7 +60,7 @@ fn frozen_snapshot_survives_new_messages_and_live_view_merges() {
         archive.insert(id, format!("Another session's original {id}"));
         view.append(
             Summary::new(node(id, 1), "0123456789"),
-            &ready_parents(id + 1),
+            lookup(&ready_parents(id + 1)),
         )
         .unwrap();
     }
@@ -88,8 +97,11 @@ fn restoring_the_saved_cover_preserves_the_append_only_rendered_prefix() {
     for id in 0..4 {
         let text = format!("user: message {id}");
         published.insert(node(id, 1), text.clone());
-        view.append(Summary::new(node(id, 1), text), &ready_parents(id + 1))
-            .unwrap();
+        view.append(
+            Summary::new(node(id, 1), text),
+            lookup(&ready_parents(id + 1)),
+        )
+        .unwrap();
     }
     let snapshot = view.freeze(4).unwrap();
     let saved_nodes = nodes(&view);
@@ -99,7 +111,7 @@ fn restoring_the_saved_cover_preserves_the_append_only_rendered_prefix() {
     published.extend(ready_parents(4));
     let loaded_cover = saved_nodes
         .iter()
-        .map(|id| Summary::new(*id, &published[id]))
+        .map(|id| Summary::new(*id, published[id].as_str()))
         .collect();
     let mut loaded = View::restore(loaded_cover, saved_shrinking, Budget::CHAT).unwrap();
     assert_eq!(nodes(&loaded), saved_nodes);
@@ -107,10 +119,7 @@ fn restoring_the_saved_cover_preserves_the_append_only_rendered_prefix() {
     assert_eq!(loaded.render().unwrap(), snapshot.render());
     published.clear(); // Rendering does not depend on keeping a backing map alive.
     loaded
-        .append(
-            Summary::new(node(4, 1), "user: new interaction"),
-            &BTreeMap::new(),
-        )
+        .append(Summary::new(node(4, 1), "user: new interaction"), none)
         .unwrap();
     let prefix = snapshot.render().strip_suffix("</chat>").unwrap();
     assert!(loaded.render().unwrap().starts_with(prefix));
@@ -124,13 +133,10 @@ fn restoring_the_saved_cover_preserves_the_append_only_rendered_prefix() {
 #[test]
 fn an_unbuilt_message_cannot_be_replaced_by_a_placeholder_or_stale_snapshot() {
     let mut view = View::new(Budget::CHAT);
-    view.append(Summary::new(node(0, 1), "first"), &BTreeMap::new())
+    view.append(Summary::new(node(0, 1), "first"), none)
         .unwrap();
     let early = Summary::new(node(2, 1), "third finished early");
-    assert_eq!(
-        view.append(early.clone(), &BTreeMap::new()),
-        Err(Error::InvalidView)
-    );
+    assert_eq!(view.append(early.clone(), none), Err(Error::InvalidView));
     assert_eq!(
         view.freeze(3),
         Err(Error::CutoffMismatch {
@@ -146,12 +152,9 @@ fn an_unbuilt_message_cannot_be_replaced_by_a_placeholder_or_stale_snapshot() {
         })
     );
     assert_eq!(nodes(&view), [node(0, 1)]);
-    view.append(
-        Summary::new(node(1, 1), "second is now complete"),
-        &BTreeMap::new(),
-    )
-    .unwrap();
-    view.append(early, &BTreeMap::new()).unwrap();
+    view.append(Summary::new(node(1, 1), "second is now complete"), none)
+        .unwrap();
+    view.append(early, none).unwrap();
     let ready = view.freeze(3).unwrap();
     assert_eq!(ready.cutoff(), 3);
     assert_eq!(ready.zoom(node(1, 1)), Ok(Zoom::Message(1)));
@@ -168,7 +171,7 @@ fn many_appends_batches_and_restores_keep_exact_coverage_and_frozen_reads() {
         let old_render = view.render().unwrap();
         let append_only = !view.is_shrinking()
             && old_render.len() + format!("{leaf}|{text}\n").len() <= budget.trigger();
-        view.append(Summary::new(leaf, text), &ready_parents(id + 1))
+        view.append(Summary::new(leaf, text), lookup(&ready_parents(id + 1)))
             .unwrap();
         let rendered = view.render().unwrap();
         assert_eq!(view.rendered_bytes().unwrap(), rendered.len());
@@ -209,24 +212,24 @@ fn failed_view_updates_preserve_the_live_view_and_ready_interaction() {
     let mut view = View::new(Budget::CHAT);
     let parents = BTreeMap::new();
     assert_eq!(
-        view.append(Summary::new(node(0, 2), "parent"), &parents),
+        view.append(Summary::new(node(0, 2), "parent"), lookup(&parents)),
         Err(Error::InvalidLeaf(node(0, 2)))
     );
     assert_eq!(
-        view.append(Summary::new(node(1, 1), "skipped"), &parents),
+        view.append(Summary::new(node(1, 1), "skipped"), lookup(&parents)),
         Err(Error::InvalidView)
     );
     assert_eq!(view.summaries(), []);
-    view.append(Summary::new(node(0, 1), "leaf"), &parents)
+    view.append(Summary::new(node(0, 1), "leaf"), lookup(&parents))
         .unwrap();
     let saved_view = view.clone();
     let snapshot = view.freeze(1).unwrap();
     assert_eq!(
-        view.append(Summary::new(node(0, 1), "duplicate"), &parents),
+        view.append(Summary::new(node(0, 1), "duplicate"), lookup(&parents)),
         Err(Error::InvalidView)
     );
     assert_eq!(
-        view.append(Summary::new(node(2, 1), "gap"), &parents),
+        view.append(Summary::new(node(2, 1), "gap"), lookup(&parents)),
         Err(Error::InvalidView)
     );
     assert_eq!(view, saved_view);
@@ -238,22 +241,22 @@ fn failed_view_updates_preserve_the_live_view_and_ready_interaction() {
 fn failed_updates_preserve_an_unfinished_batch_and_its_snapshot() {
     let mut view = View::new(Budget::new(20, 60).unwrap());
     for id in 0..4 {
-        view.append(Summary::new(node(id, 1), "0123456789"), &BTreeMap::new())
+        view.append(Summary::new(node(id, 1), "0123456789"), none)
             .unwrap();
     }
     assert!(view.is_shrinking());
     let saved = view.clone();
     let snapshot = view.freeze(4).unwrap();
     assert_eq!(
-        view.append(Summary::new(node(0, 2), "parent"), &BTreeMap::new()),
+        view.append(Summary::new(node(0, 2), "parent"), none),
         Err(Error::InvalidLeaf(node(0, 2)))
     );
     assert_eq!(
-        view.append(Summary::new(node(5, 1), "gap"), &BTreeMap::new()),
+        view.append(Summary::new(node(5, 1), "gap"), none),
         Err(Error::InvalidView)
     );
     assert_eq!(view, saved);
-    view.compact(&ready_parents(4)).unwrap();
+    view.compact(lookup(&ready_parents(4))).unwrap();
     assert!(!view.is_shrinking());
     assert_eq!(nodes(&view), [node(0, 4)]);
     assert_eq!(
@@ -290,7 +293,7 @@ fn later_parent_completion_cannot_expand_frozen_navigation() {
     let mut parents = BTreeMap::new();
     let mut view = View::new(Budget::new(20, 30).unwrap());
     for id in 0..2 {
-        view.append(Summary::new(node(id, 1), "0123456789"), &parents)
+        view.append(Summary::new(node(id, 1), "0123456789"), lookup(&parents))
             .unwrap();
     }
     let snapshot = view.freeze(2).unwrap();
@@ -299,7 +302,7 @@ fn later_parent_completion_cannot_expand_frozen_navigation() {
     assert_eq!(snapshot.zoom(parent), Err(Error::OutsideSnapshot(parent)));
     assert_eq!(snapshot.zoom(node(1, 1)), Ok(Zoom::Message(1)));
     parents.insert(parent, "p".into());
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     assert_eq!(nodes(&view), [parent]);
     assert_eq!(snapshot.zoom(parent), Err(Error::OutsideSnapshot(parent)));
     assert_eq!(snapshot.render(), rendered);

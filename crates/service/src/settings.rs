@@ -1,38 +1,33 @@
 //! Startup settings. File values are overridden by SEPTEMBER_* environment values.
 
-use std::{env, fmt, net::SocketAddr, path::Path};
+use std::{env, net::SocketAddr, path::Path};
 
 use config::{Config, Environment, File};
+use september::summarizer::Provider;
 use serde::Deserialize;
 
-#[derive(Clone, Copy, Deserialize, PartialEq)]
+/// What builds summaries: nothing (external workers only), fakes, or a model.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Summarizer {
     None,
     Fake,
-    Openai,
-    Anthropic,
+    #[serde(untagged)]
+    Model(Provider),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Settings {
     pub bind: SocketAddr,
-    storage: String,
     pub summarizer: Summarizer,
     pub model: Option<String>,
 }
 
-#[derive(Debug)]
+/// A startup failure. Messages are fixed so that setting values are never echoed.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub(crate) struct Error(&'static str);
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for Error {}
 
 impl Settings {
     pub(crate) fn load() -> Result<Self, Error> {
@@ -62,7 +57,6 @@ impl Settings {
     fn read(path: Option<&Path>, environment: Environment) -> Result<Self, Error> {
         let mut builder = Config::builder()
             .set_default("bind", "127.0.0.1:3000")
-            .and_then(|builder| builder.set_default("storage", "memory"))
             .and_then(|builder| builder.set_default("summarizer", "none"))
             .map_err(|_| Error("could not initialize settings"))?;
         if let Some(path) = path {
@@ -76,39 +70,31 @@ impl Settings {
             .map_err(|_| {
                 Error("invalid settings: check SEPTEMBER_CONFIG and SEPTEMBER_* variables")
             })?;
-        if settings.storage != "memory" {
-            return Err(Error("SEPTEMBER_STORAGE currently supports only memory"));
-        }
         if !settings.bind.ip().is_loopback() {
             return Err(Error("the unauthenticated server must bind to loopback"));
         }
-        if matches!(
-            settings.summarizer,
-            Summarizer::Openai | Summarizer::Anthropic
-        ) && settings
-            .model
-            .as_ref()
-            .is_none_or(|model| model.trim().is_empty())
+        if matches!(settings.summarizer, Summarizer::Model(_))
+            && settings
+                .model
+                .as_ref()
+                .is_none_or(|model| model.trim().is_empty())
         {
             return Err(Error("SEPTEMBER_MODEL is required for real summarization"));
         }
         Ok(settings)
     }
+}
 
-    pub(crate) fn api_key(&self) -> Result<String, Error> {
-        let name = match self.summarizer {
-            Summarizer::Openai => "OPENAI_API_KEY",
-            Summarizer::Anthropic => "ANTHROPIC_API_KEY",
-            _ => return Err(Error("the selected summarizer does not use an API key")),
-        };
-        env::var(name)
-            .ok()
-            .filter(|key| !key.trim().is_empty())
-            .ok_or(Error(match self.summarizer {
-                Summarizer::Openai => "OPENAI_API_KEY is required",
-                _ => "ANTHROPIC_API_KEY is required",
-            }))
-    }
+/// A provider's standalone API key. Harness logins are never consulted.
+pub(crate) fn api_key(provider: Provider) -> Result<String, Error> {
+    let (name, missing) = match provider {
+        Provider::Openai => ("OPENAI_API_KEY", "OPENAI_API_KEY is required"),
+        Provider::Anthropic => ("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY is required"),
+    };
+    env::var(name)
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+        .ok_or(Error(missing))
 }
 
 #[cfg(test)]

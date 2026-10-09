@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::fmt::{self, Write};
 use std::sync::Arc;
 
 use crate::{Error, Node};
@@ -18,10 +18,10 @@ pub struct Summary {
 impl Summary {
     /// Own the supplied completed text, sharing it immutably across clones.
     #[must_use]
-    pub fn new(node: Node, text: impl AsRef<str>) -> Self {
+    pub fn new(node: Node, text: impl Into<Arc<str>>) -> Self {
         Self {
             node,
-            text: Arc::from(text.as_ref()),
+            text: text.into(),
         }
     }
 
@@ -46,16 +46,24 @@ impl Summary {
     }
 
     pub(crate) fn render_into(&self, rendered: &mut String) {
-        // Neither String's writer nor Node's formatter can return an error.
-        let _ = write!(rendered, "{}|", self.node);
-        for character in self.text.chars() {
-            rendered.push(if matches!(character, '\r' | '\n') {
-                ' '
-            } else {
-                character
-            });
+        // Neither String's writer nor this formatter can return an error.
+        let _ = writeln!(rendered, "{self}");
+    }
+}
+
+/// The view line `start+length|text`, with CR and LF flattened to spaces.
+impl fmt::Display for Summary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}|", self.node)?;
+        let mut parts = self.text.split(['\r', '\n']);
+        if let Some(first) = parts.next() {
+            formatter.write_str(first)?;
         }
-        rendered.push('\n');
+        for part in parts {
+            formatter.write_char(' ')?;
+            formatter.write_str(part)?;
+        }
+        Ok(())
     }
 }
 
@@ -67,7 +75,7 @@ mod tests {
     fn owns_text_independently_of_the_supplied_buffer() {
         let node = Node::new(40, 8).unwrap();
         let mut source = String::from("user: keep this");
-        let summary = Summary::new(node, &source);
+        let summary = Summary::new(node, source.as_str());
         let copy = summary.clone();
         source.clear();
         assert_eq!(summary.node(), node);
@@ -81,6 +89,7 @@ mod tests {
         let mut rendered = String::new();
         summary.render_into(&mut rendered);
         assert_eq!(rendered, "40+8|user: café  🙂\n");
+        assert_eq!(summary.to_string(), "40+8|user: café  🙂");
         assert_eq!(summary.text(), "user: café\r\n🙂");
         assert_eq!(summary.rendered_bytes(), Ok(rendered.len()));
     }
@@ -88,7 +97,7 @@ mod tests {
     #[test]
     fn accepts_oversized_text_and_coarse_nodes_without_descendants() {
         let text = "🙂".repeat(200);
-        let summary = Summary::new(Node::new(0, 1024).unwrap(), &text);
+        let summary = Summary::new(Node::new(0, 1024).unwrap(), text.as_str());
         assert_eq!(summary.text(), text);
         let mut rendered = String::new();
         summary.render_into(&mut rendered);

@@ -11,7 +11,8 @@ use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
 use crate::{
     archive::{Kind, Message, Source},
-    snapshots::{Range, Summary},
+    jobs::Context,
+    snapshots::{self, Range},
 };
 
 use super::*;
@@ -97,6 +98,19 @@ fn context() -> Context {
     }
 }
 
+fn job(input: Input) -> Job {
+    let length = if matches!(input, Input::Children { .. }) {
+        2
+    } else {
+        1
+    };
+    Job {
+        range: Range { start: 0, length },
+        input,
+        context: context(),
+    }
+}
+
 fn response(provider: Provider, text: &str) -> Value {
     match provider {
         Provider::Openai => {
@@ -128,11 +142,7 @@ async fn both_providers_receive_provenance_and_context_and_return_only_final_tex
             )],
         )
         .await;
-        let summary = server
-            .summarizer
-            .summarize(input(), context())
-            .await
-            .unwrap();
+        let summary = server.summarizer.summarize(&job(input())).await.unwrap();
         assert!(summary.starts_with("Proposal"));
         assert!(!summary.contains("private reasoning"));
         let state = server.state.lock().await;
@@ -173,7 +183,7 @@ async fn corrections_measure_utf8_and_preserve_the_frozen_context() {
         assert_eq!(
             server
                 .summarizer
-                .summarize(input(), context())
+                .summarize(&job(input()))
                 .await
                 .unwrap()
                 .len(),
@@ -181,7 +191,9 @@ async fn corrections_measure_utf8_and_preserve_the_frozen_context() {
         );
         let state = server.state.lock().await;
         assert_eq!(state.requests.len(), 2);
-        assert!(state.requests[1].2.to_string().contains("600 UTF-8 bytes"));
+        let correction = state.requests[1].2.to_string();
+        assert!(correction.contains("your line is 600 bytes"));
+        assert!(correction.contains(&format!("{}| ← LIMIT", "é".repeat(256))));
         for (_, _, body) in &state.requests {
             assert!(body.to_string().contains("Earlier decision"));
         }
@@ -189,54 +201,19 @@ async fn corrections_measure_utf8_and_preserve_the_frozen_context() {
 }
 
 #[tokio::test]
-async fn exhausted_corrections_fail_instead_of_truncating_or_publishing() {
+async fn exhausted_attempts_keep_the_shortest_draft_within_the_ceiling() {
     let provider = Provider::Openai;
-    let server = server(
-        provider,
-        vec![(StatusCode::OK, response(provider, &"x".repeat(513))); 6],
-    )
-    .await;
-    assert!(
-        server
-            .summarizer
-            .summarize(input(), context())
-            .await
-            .is_err()
-    );
-    assert_eq!(server.state.lock().await.requests.len(), 6);
-}
+    let drafts = [700, 600, 2000, 650, 900]
+        .map(|bytes| (StatusCode::OK, response(provider, &"x".repeat(bytes))));
+    let shortest = server(provider, drafts.into()).await;
+    let summary = shortest.summarizer.summarize(&job(input())).await.unwrap();
+    assert_eq!(summary.len(), 600);
+    assert_eq!(shortest.state.lock().await.requests.len(), 5);
 
-#[tokio::test]
-async fn short_children_join_without_a_model_call() {
-    let server = server(Provider::Openai, vec![]).await;
-    let children = Input::Children {
-        summaries: [
-            Summary {
-                range: Range {
-                    start: 0,
-                    length: 1,
-                },
-                text: "a".repeat(255),
-            },
-            Summary {
-                range: Range {
-                    start: 1,
-                    length: 1,
-                },
-                text: "b".repeat(256),
-            },
-        ],
-    };
-    assert_eq!(
-        server
-            .summarizer
-            .summarize(children, context())
-            .await
-            .unwrap()
-            .len(),
-        512
-    );
-    assert_eq!(server.state.lock().await.requests.len(), 0);
+    let drafts = vec![(StatusCode::OK, response(provider, &"é".repeat(1000))); 5];
+    let ceiling = server(provider, drafts).await;
+    let summary = ceiling.summarizer.summarize(&job(input())).await.unwrap();
+    assert_eq!(summary, "é".repeat(MAX_SUMMARY_BYTES / 2));
 }
 
 #[tokio::test]
@@ -249,14 +226,14 @@ async fn oversized_children_use_the_model_in_archive_order() {
     .await;
     let children = Input::Children {
         summaries: [
-            Summary {
+            snapshots::Summary {
                 range: Range {
                     start: 0,
                     length: 1,
                 },
                 text: "a".repeat(256),
             },
-            Summary {
+            snapshots::Summary {
                 range: Range {
                     start: 1,
                     length: 1,
@@ -266,23 +243,25 @@ async fn oversized_children_use_the_model_in_archive_order() {
         ],
     };
     assert_eq!(
-        server
-            .summarizer
-            .summarize(children, context())
-            .await
-            .unwrap(),
+        server.summarizer.summarize(&job(children)).await.unwrap(),
         "parent summary"
     );
     let state = server.state.lock().await;
     assert_eq!(state.requests.len(), 1);
-    let data: Value = serde_json::from_str(
-        state.requests[0].2["messages"][0]["content"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(data["input"]["summaries"][0]["range"]["start"], 0);
-    assert_eq!(data["input"]["summaries"][1]["range"]["start"], 1);
+    let task = state.requests[0].2["messages"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        task.starts_with("<chat>Earlier decision</chat>\n\nCompaction: merge lines 0+1 and 1+1")
+    );
+    assert!(task.contains(&format!("ruler:\n{}\n", "-".repeat(SUMMARY_BYTES))));
+    assert!(task.contains("messages, 0 to 1, in more detail"));
+    let input = format!(
+        "<input>\n0+1|{}\n1+1|{}\n</input>",
+        "a".repeat(256),
+        "b".repeat(256)
+    );
+    assert!(task.ends_with(&input));
 }
 
 #[tokio::test]
@@ -298,13 +277,7 @@ async fn unsolicited_tool_calls_cannot_become_summary_text() {
             })),
         }
         let server = server(provider, vec![(StatusCode::OK, reply)]).await;
-        assert!(
-            server
-                .summarizer
-                .summarize(input(), context())
-                .await
-                .is_err()
-        );
+        assert!(server.summarizer.summarize(&job(input())).await.is_err());
         assert_eq!(server.state.lock().await.requests.len(), 1);
     }
 }
@@ -329,13 +302,7 @@ async fn rejects_incomplete_empty_and_mixed_refusal_responses() {
         }
         for reply in [truncated, refused, response(provider, " ")] {
             let server = server(provider, vec![(StatusCode::OK, reply)]).await;
-            assert!(
-                server
-                    .summarizer
-                    .summarize(input(), context())
-                    .await
-                    .is_err()
-            );
+            assert!(server.summarizer.summarize(&job(input())).await.is_err());
             assert_eq!(server.state.lock().await.requests.len(), 1);
         }
     }
@@ -353,7 +320,7 @@ async fn provider_errors_do_not_expose_bodies_or_credentials() {
     .await;
     let error = server
         .summarizer
-        .summarize(input(), context())
+        .summarize(&job(input()))
         .await
         .unwrap_err();
     let diagnostic = format!("{error:?}");

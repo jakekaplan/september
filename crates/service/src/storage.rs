@@ -1,7 +1,8 @@
 //! Atomic storage contracts and backend implementations.
 
+use std::future::Future;
+
 use september_memory::Node;
-use std::{future::Future, time::Duration};
 use uuid::Uuid;
 
 use crate::{
@@ -39,23 +40,16 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Claim one ready job, recovering expired claims; at most eight are active.
     /// Leaves require fewer than eight earlier unbuilt leaves. Freeze historical
-    /// context on first claim and retain it across release, expiry, and retries.
+    /// context on first claim and retain it across expiry and retries.
     /// Defer jobs whose context exceeds 32,000 bytes while ready parents progress.
     fn claim(&self) -> impl Future<Output = Result<Option<Claim>, Error>> + Send;
 
     /// Extend a live claim by another 60 seconds. Reject expired or replaced tokens.
+    /// A claim that is not renewed lapses, and its job becomes claimable again.
     fn renew(&self, node: Node, token: Uuid) -> impl Future<Output = Result<(), Error>> + Send;
 
-    /// Release a live claim, making it available after `retry_after`.
-    /// Shutdown uses zero delay; exhausted attempts use a backoff.
-    fn release(
-        &self,
-        node: Node,
-        token: Uuid,
-        retry_after: Duration,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
-
-    /// Publish once under a live claim and enqueue newly ready parents atomically.
+    /// Publish once under a live claim, atomically with every parent whose two
+    /// children now fit together verbatim; enqueue the first parent that does not.
     /// Retrying an identical successful completion is allowed.
     fn complete(&self, completion: Completion) -> impl Future<Output = Result<(), Error>> + Send;
 }

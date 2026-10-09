@@ -8,6 +8,17 @@ use crate::{
     snapshots::{Range, Summary},
 };
 
+/// The summary size a model is asked for, in UTF-8 bytes. A message or a pair of
+/// children that fits within it is published verbatim, without a model call.
+pub const SUMMARY_BYTES: usize = 512;
+
+/// The largest accepted summary. The view measures real sizes, so a summary a
+/// little over [`SUMMARY_BYTES`] is kept rather than stalling every later snapshot.
+pub const MAX_SUMMARY_BYTES: usize = 2 * SUMMARY_BYTES;
+
+/// Summaries built at once across all workers.
+pub(crate) const MAX_CLAIMS: usize = 8;
+
 /// Immutable inputs to a claimed summary job. Workers treat all text as data.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -17,7 +28,7 @@ pub enum Input {
         /// Original source record.
         message: Message,
     },
-    /// Compress two completed children, preserving provenance and uncertainty.
+    /// Merge two completed children that do not fit together verbatim.
     Children {
         /// Both children in archive order.
         summaries: [Summary; 2],
@@ -33,19 +44,27 @@ pub struct Context {
     pub view: String,
 }
 
-/// A recoverable, fenced claim with a renewable 60-second lifetime.
+/// One summary to build: its range, its source content, and frozen context.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct Claim {
+pub struct Job {
     /// Range to publish.
     pub range: Range,
-    /// Unique fencing token; an expired or superseded token cannot publish.
-    pub token: Uuid,
-    /// Claim lifetime measured by the server, not the client's clock.
-    pub lease_seconds: u64,
     /// Completed source content for the worker.
     pub input: Input,
     /// Bounded historical data to interpret the input; never worker instructions.
     pub context: Context,
+}
+
+/// Permission to publish one job, fenced and renewable for 60 seconds at a time.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Claim {
+    /// The summary to build.
+    #[serde(flatten)]
+    pub job: Job,
+    /// Unique fencing token; an expired or superseded token cannot publish.
+    pub token: Uuid,
+    /// Claim lifetime measured by the server, not the client's clock.
+    pub lease_seconds: u64,
 }
 
 /// A worker's measured summary output.
@@ -56,6 +75,6 @@ pub struct Completion {
     pub range: Range,
     /// Current fencing token.
     pub token: Uuid,
-    /// Nonempty summary, at most 512 UTF-8 bytes.
+    /// Nonempty summary, at most [`MAX_SUMMARY_BYTES`] UTF-8 bytes.
     pub text: String,
 }

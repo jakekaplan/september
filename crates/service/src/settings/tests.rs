@@ -15,7 +15,7 @@ fn environment(values: &[(&str, &str)]) -> Environment {
 fn defaults_need_no_model_or_credentials() {
     let settings = Settings::read(None, environment(&[])).unwrap();
     assert_eq!(settings.bind.to_string(), "127.0.0.1:3000");
-    assert!(settings.summarizer == Summarizer::None);
+    assert_eq!(settings.summarizer, Summarizer::None);
     assert!(settings.model.is_none());
 }
 
@@ -26,7 +26,7 @@ fn validates_startup_settings_without_echoing_values() {
         vec![("SUMMARIZER", "openai")],
         vec![("SUMMARIZER", "anthropic"), ("MODEL", " ")],
         vec![("BIND", "0.0.0.0:3000")],
-        vec![("STORAGE", "postgres")],
+        vec![("STORAGE", "memory")],
         vec![("API_KEY", "secret-invalid-provider")],
     ] {
         let result = Settings::read(None, environment(&values));
@@ -55,7 +55,7 @@ fn environment_overrides_toml_and_missing_explicit_file_fails() {
     )
     .unwrap();
     fs::remove_file(&path).unwrap();
-    assert!(settings.summarizer == Summarizer::Anthropic);
+    assert_eq!(settings.summarizer, Summarizer::Model(Provider::Anthropic));
     assert_eq!(settings.model.as_deref(), Some("from-env"));
     assert_eq!(settings.bind.port(), 4000);
     assert!(Settings::read(Some(&path), environment(&[])).is_err());

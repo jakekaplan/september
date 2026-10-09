@@ -44,4 +44,5 @@ hooks +paths:
 ci: fmt-check files
     cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     cargo test --locked --workspace
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
     cargo deny --locked check

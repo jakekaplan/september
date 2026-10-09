@@ -2176,6 +2176,7 @@ dependencies = [
  "september-memory",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tower",
  "tracing",

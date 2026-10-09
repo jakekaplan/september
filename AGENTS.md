@@ -9,24 +9,15 @@ agent harness. Clients contribute finalized conversation messages and retrieve
 bounded, chronological summary views. Original archived messages remain
 accessible through a binary summary tree.
 
-The deterministic memory core in `crates/memory` implements aligned ranges,
-owned completed-summary covers, batched views, restoration, and frozen zoom range
-selection. It does not own a full-history tree or retrieve archive content. It
-has no external dependencies or I/O. The service crate implements a local HTTP
-server, an interchangeable atomic storage contract, and a bounded in-memory
-backend. It supports ingestion, frozen snapshots, zoom, and fenced summary jobs.
-An opt-in continuous worker uses Docket in memory with OpenAI, Anthropic, or
-visibly fake summaries for synthetic data. Claims carry bounded historical context from a retained
-compaction view, frozen across retries. Typed settings support optional TOML and
-environment overrides; model credentials are standalone API keys. There is no
-persistent backend, CLI, MCP, or harness integration.
-In-memory acknowledgments are explicitly volatile and expire with the process.
-Do not describe planned hosted behavior as implemented.
+`README.md#status` is the single statement of what is implemented; update it,
+not a copy here, when that changes. Do not describe planned hosted behavior as
+implemented. In-memory acknowledgments are explicitly volatile.
 
 The design starts from [UniiChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449)
 and [OptMem](https://github.com/VictorTaelin/OptMem). Study the ideas; do not copy
 unlicensed implementation code. See `docs/architecture.md` for the agreed
-behavior and `docs/references.md` for Rust reference projects.
+behavior and `docs/references.md` for Rust reference projects. When a choice
+departs from the gist, say so in `docs/architecture.md`.
 
 ## Ownership
 
@@ -61,8 +52,8 @@ crates/service/  september: service operations, persistence, transports, worker
 - Persist views and their merge history. Do not rebuild them on each request or
   restart: rebuilding changes the prefix and defeats prompt-cache reuse.
 - Batch merges using the pair's age measured from its last message, not its first.
-  Supply all eligible ready parents, including those enabled by earlier merges
-  in the batch. Missing working-set entries mean not ready, not cache misses.
+  The built-parent lookup must answer for every range, including parents enabled
+  by earlier merges in the batch. `None` means not built, never a cache miss.
 - Freeze a snapshot at each interaction boundary. Zoom selects only a frozen
   cover node or its descendants, never a newly completed ancestor spanning cover
   lines. The service retrieves immutable content for the selected ranges.
@@ -72,8 +63,9 @@ crates/service/  september: service operations, persistence, transports, worker
   supported in-memory mode explicitly advertises volatile acknowledgments.
   Retried uploads must not duplicate messages; clients need stable identities.
 - Summary work uses a durable ready queue, bounded concurrency, and recoverable
-  claims. Do not scan the entire tree for work or hold transactions over model
-  calls. Reject stale workers' completion attempts after a claim changes hands.
+  claims. Storage stays authoritative for readiness, claims, and publication;
+  Docket runs the work. Do not scan the entire tree for work or hold transactions
+  over model calls. Reject stale workers' completions after a claim changes hands.
 - An unready snapshot stays visibly unready. Do not substitute partial source
   messages, placeholders, or silently stale memory.
 - Size budgets are UTF-8 bytes, not characters or tokens. Measure outputs; do not

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 
 fn node(start: u64, length: u64) -> Node {
@@ -10,6 +12,14 @@ fn summary(start: u64, length: u64, text: &str) -> Summary {
 
 fn nodes(view: &View) -> Vec<Node> {
     view.summaries().iter().map(Summary::node).collect()
+}
+
+fn none(_: Node) -> Option<Arc<str>> {
+    None
+}
+
+fn lookup(parents: &BTreeMap<Node, String>) -> impl Fn(Node) -> Option<Arc<str>> + '_ {
+    |node| parents.get(&node).map(|text| Arc::from(text.as_str()))
 }
 
 fn ready_parents(count: u64) -> BTreeMap<Node, String> {
@@ -41,7 +51,7 @@ fn validates_budgets_and_counts_actual_utf8_rendering() {
         (16_000, 32_000)
     );
     let mut view = View::new(Budget::CHAT);
-    view.append(summary(0, 1, "user: café\n🙂\rnext"), &BTreeMap::new())
+    view.append(summary(0, 1, "user: café\n🙂\rnext"), none)
         .unwrap();
     assert_eq!(
         view.render().unwrap(),
@@ -55,14 +65,18 @@ fn only_crossing_the_trigger_starts_a_batch() {
     let parents = ready_parents(4);
     let mut view = View::new(Budget::new(31, 36).unwrap());
     for id in 0..2 {
-        view.append(summary(id, 1, "abcdef"), &parents).unwrap();
+        view.append(summary(id, 1, "abcdef"), lookup(&parents))
+            .unwrap();
     }
     assert_eq!(view.rendered_bytes(), Ok(36));
     assert_eq!(nodes(&view), [node(0, 1), node(1, 1)]);
     assert!(!view.is_shrinking());
-    view.compact(&parents).unwrap();
+    assert_eq!(view.compact(lookup(&parents)), Ok(0));
     assert_eq!(nodes(&view), [node(0, 1), node(1, 1)]);
-    view.append(summary(2, 1, "abcdef"), &parents).unwrap();
+    assert_eq!(
+        view.append(summary(2, 1, "abcdef"), lookup(&parents)),
+        Ok(1)
+    );
     assert_eq!(nodes(&view), [node(0, 2), node(2, 1)]);
     assert_eq!(view.rendered_bytes(), Ok(31));
     assert!(!view.is_shrinking());
@@ -73,10 +87,14 @@ fn one_batch_merges_repeatedly_until_the_target() {
     let parents = ready_parents(4);
     let mut view = View::new(Budget::new(20, 60).unwrap());
     for id in 0..3 {
-        view.append(summary(id, 1, "0123456789"), &parents).unwrap();
+        view.append(summary(id, 1, "0123456789"), lookup(&parents))
+            .unwrap();
     }
     assert_eq!(view.summaries().len(), 3);
-    view.append(summary(3, 1, "0123456789"), &parents).unwrap();
+    assert_eq!(
+        view.append(summary(3, 1, "0123456789"), lookup(&parents)),
+        Ok(3)
+    );
     assert_eq!(nodes(&view), [node(0, 4)]);
     assert_eq!(view.rendered_bytes(), Ok(20));
     assert!(!view.is_shrinking());
@@ -88,24 +106,25 @@ fn a_blocked_batch_survives_restore_and_resumes_below_the_trigger() {
     let budget = Budget::new(20, 60).unwrap();
     let mut view = View::new(budget);
     for id in 0..4 {
-        view.append(summary(id, 1, "0123456789"), &parents).unwrap();
+        view.append(summary(id, 1, "0123456789"), lookup(&parents))
+            .unwrap();
     }
     assert!(view.is_shrinking());
     let blocked = view.clone();
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     assert_eq!(view, blocked);
     parents.insert(node(0, 2), "p".into());
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     assert_eq!(view.rendered_bytes(), Ok(50));
     let mut restored =
         View::restore(view.summaries().to_vec(), view.is_shrinking(), budget).unwrap();
     assert_eq!(restored.render(), view.render());
     parents.insert(node(2, 2), "p".into());
-    restored.compact(&parents).unwrap();
+    restored.compact(lookup(&parents)).unwrap();
     assert_eq!(nodes(&restored), [node(0, 2), node(2, 2)]);
     assert!(restored.is_shrinking());
     parents.insert(node(0, 4), "p".into());
-    restored.compact(&parents).unwrap();
+    restored.compact(lookup(&parents)).unwrap();
     assert_eq!(nodes(&restored), [node(0, 4)]);
     assert!(!restored.is_shrinking());
 }
@@ -115,11 +134,10 @@ fn pending_batches_also_resume_on_append() {
     let budget = Budget::new(20, 60).unwrap();
     let mut view = View::new(budget);
     for id in 0..4 {
-        view.append(summary(id, 1, "0123456789"), &BTreeMap::new())
-            .unwrap();
+        view.append(summary(id, 1, "0123456789"), none).unwrap();
     }
     assert!(view.is_shrinking());
-    view.append(summary(4, 1, "next"), &ready_parents(5))
+    view.append(summary(4, 1, "next"), lookup(&ready_parents(5)))
         .unwrap();
     assert_eq!(nodes(&view), [node(0, 4), node(4, 1)]);
     assert!(view.is_shrinking());
@@ -137,7 +155,7 @@ fn ranking_uses_the_pairs_last_message_not_first_or_exclusive_end() {
     ];
     let mut view = View::restore(cover, true, Budget::new(160, 180).unwrap()).unwrap();
     let parents = BTreeMap::from([(node(0, 8), "p".into()), (node(8, 2), "p".into())]);
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     assert_eq!(nodes(&view), [node(0, 4), node(4, 4), node(8, 2)]);
 }
 
@@ -152,7 +170,7 @@ fn equal_due_pairs_choose_the_oldest_even_across_levels() {
         summary(6, 1, &text),
     ];
     let mut view = View::restore(cover, true, Budget::new(155, 160).unwrap()).unwrap();
-    view.compact(&ready_parents(7)).unwrap();
+    view.compact(lookup(&ready_parents(7))).unwrap();
     assert_eq!(
         nodes(&view),
         [node(0, 4), node(4, 1), node(5, 1), node(6, 1)]
@@ -195,7 +213,7 @@ fn ranks_large_sparse_ranges_exactly_when_float_scores_would_tie() {
     )
     .unwrap();
     let parents = BTreeMap::from([(node(0, 8 * scale), "p".into()), (recent, "p".into())]);
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     assert_eq!(
         &nodes(&view)[..3],
         &[node(0, 4 * scale), node(4 * scale, 4 * scale), recent]
@@ -209,7 +227,7 @@ fn chooses_a_ready_pair_when_the_more_due_parent_is_not_ready() {
     let text = "x".repeat(40);
     let cover = (0..4).map(|id| summary(id, 1, &text)).collect();
     let mut view = View::restore(cover, true, Budget::new(160, 180).unwrap()).unwrap();
-    view.compact(&BTreeMap::from([(node(2, 2), "p".into())]))
+    view.compact(lookup(&BTreeMap::from([(node(2, 2), "p".into())])))
         .unwrap();
     assert_eq!(nodes(&view), [node(0, 1), node(1, 1), node(2, 2)]);
 }
@@ -219,7 +237,7 @@ fn merging_supplied_coarse_summaries_needs_only_the_ready_parent() {
     let cover = vec![summary(0, 2, "p"), summary(2, 2, "p")];
     let mut view = View::restore(cover, true, Budget::new(20, 25).unwrap()).unwrap();
     let mut parents = BTreeMap::from([(node(0, 4), "p".into())]);
-    view.compact(&parents).unwrap();
+    view.compact(lookup(&parents)).unwrap();
     parents.clear();
     assert_eq!(nodes(&view), [node(0, 4)]);
     assert_eq!(view.render().unwrap(), "<chat>\n0+4|p\n</chat>");
@@ -259,16 +277,15 @@ fn restore_validates_cover_and_batch_state_without_refitting() {
 fn oversized_summaries_are_counted_and_do_not_make_a_blocked_batch_spin() {
     let mut view = View::new(Budget::new(20, 29).unwrap());
     for id in 0..2 {
-        view.append(summary(id, 1, "short"), &BTreeMap::new())
-            .unwrap();
+        view.append(summary(id, 1, "short"), none).unwrap();
     }
-    view.compact(&BTreeMap::from([(node(0, 2), "🙂".repeat(200))]))
+    view.compact(lookup(&BTreeMap::from([(node(0, 2), "🙂".repeat(200))])))
         .unwrap();
     assert_eq!(nodes(&view), [node(0, 2)]);
     assert_eq!(view.rendered_bytes(), Ok(819));
     assert!(view.is_shrinking());
     let saved = view.clone();
-    view.compact(&BTreeMap::new()).unwrap();
+    view.compact(none).unwrap();
     assert_eq!(view, saved);
 }
 
@@ -298,16 +315,15 @@ fn historical_prefix_requires_a_whole_cover_boundary() {
 fn resizing_batches_to_target_even_below_trigger_and_retains_blocked_state() {
     let mut view = View::new(Budget::CHAT);
     for id in 0..4 {
-        view.append(summary(id, 1, "0123456789"), &BTreeMap::new())
-            .unwrap();
+        view.append(summary(id, 1, "0123456789"), none).unwrap();
     }
     let budget = Budget::new(20, 100).unwrap();
-    view.resize(budget, &BTreeMap::new()).unwrap();
+    view.resize(budget, none).unwrap();
     assert!(view.is_shrinking());
     assert!(!view.prefix(0).unwrap().is_shrinking());
     assert!(view.prefix(2).unwrap().is_shrinking());
     let mut restored = View::restore(view.summaries().to_vec(), true, budget).unwrap();
-    restored.compact(&ready_parents(4)).unwrap();
+    restored.compact(lookup(&ready_parents(4))).unwrap();
     assert_eq!(nodes(&restored), [node(0, 4)]);
     assert!(!restored.is_shrinking());
 }

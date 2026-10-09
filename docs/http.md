@@ -2,8 +2,7 @@
 
 Run `cargo run --locked -p september` from the repository root. The default
 address is `127.0.0.1:3000`; override it with `SEPTEMBER_BIND` using a loopback
-address. `SEPTEMBER_STORAGE=memory` selects the only implemented backend. Unknown
-backend names fail startup. Ctrl-C or SIGTERM stops accepting new connections,
+address. Storage is in memory, the only implemented backend. Ctrl-C or SIGTERM stops accepting new connections,
 allows ten seconds for active connections to drain, then cancels and joins any
 remaining connection tasks.
 
@@ -39,8 +38,9 @@ curl -sS -X PUT \
 ```
 
 A ready response has `status:"ready"`, `cutoff:1`, `nodes:[{"start":0,"length":1}]`,
-and a `view` string containing the original message and provenance inside a
-`<chat>` block. Repeating the PUT returns that same interaction, even if other
+and a `view` string containing the line `0+1|user: Use in-memory storage first.`
+inside a `<chat>` block. Provenance and timestamps stay in the archive; zoom
+returns them. Repeating the PUT returns that same interaction, even if other
 sessions have uploaded more messages. Use GET on the same URL to read it again.
 
 Retrieve the original:
@@ -57,11 +57,13 @@ spanning several frozen lines remains forbidden, even if it completes later.
 
 ## Summary readiness and work
 
-The service serializes a short source record, including provenance, verbatim
-into a leaf if it fits within 512 UTF-8 bytes. Larger records remain archived
-intact and become eligible when fewer than eight earlier leaves remain unbuilt.
-Parent jobs become ready only when both
-children have completed. No model is called unless a provider summarizer is enabled.
+A message that fits within 512 UTF-8 bytes as a `kind: text` line is its own
+summary, word for word. When both children of a parent are complete and fit in
+512 bytes together, the parent is their two summaries joined by a newline. Both
+happen at publication, with no job. Longer messages stay archived intact and
+become jobs once fewer than eight earlier leaves remain unbuilt. A parent too
+long to join becomes a job when its second child completes. No model is called
+unless a provider summarizer is enabled.
 
 An interaction whose cutoff includes an incomplete leaf returns HTTP 202:
 
@@ -101,14 +103,15 @@ snapshots, which remain pending until their full cutoff is covered.
 The retained compaction view batches from a 32,000-byte trigger toward 16,000
 bytes. A main-view merge derives it again from the new main cover. Claims freeze
 context on their first successful acquisition, retaining those exact bytes
-through retries, release, and expiry. A job whose context still exceeds 32,000
+through retries and expiry. A job whose context still exceeds 32,000
 bytes waits while other ready parent jobs provide the summaries needed to shrink
 it; HTTP 204 can therefore also mean context is temporarily too large.
 
 POST `/v1/jobs/complete` with `Content-Type: application/json` and the claim's
 actual range/token plus nonempty summary `text`. The example token above is
-illustrative. Output must be at most 512 UTF-8 bytes; oversized output returns
-400 and leaves the live claim usable. Successful publication returns 204.
+illustrative. Aim for at most 512 UTF-8 bytes. Up to 1,024 are accepted,
+because the view measures real sizes. Longer output returns 400 and leaves the
+live claim usable. Successful publication returns 204.
 The identical successful completion can be retried. Conflicting output, expired
 claims, and replaced tokens return 409. Completed summaries cannot be overwritten.
 
@@ -120,16 +123,16 @@ within 60 seconds or abandon that attempt. The in-process continuous worker uses
 work. OpenAI and Anthropic access is available through the opt-in in-process
 worker; provider spend policy and live summary-quality validation remain future work.
 
-`SEPTEMBER_SUMMARIZER=fake` starts the continuous worker alongside HTTP for
+`SEPTEMBER_SUMMARIZER=fake` starts the Docket worker alongside HTTP for
 synthetic local testing. It labels output `FAKE` and every HTTP response with
-`x-september-summarizer: fake`; the default `none` leaves jobs for manual workers.
-`openai` and `anthropic` use the same worker with a required model and standalone
-API key; see [startup settings](../README.md#continuous-worker). They publish only
-measured, complete summaries of at most 512 UTF-8 bytes, with up to five byte-limit
-corrections per attempt. The worker retries a job up to three times with a two-minute limit per attempt, then
-releases it with a 30-second backoff. Pending snapshots never receive a partial
-view on failure. During shutdown it stops claiming, drains for ten seconds,
-then cancels unfinished work and releases claims with bounded cleanup.
+`x-september-summarizer: fake`; the default `none` leaves jobs for external
+workers. `openai` and `anthropic` use the same worker with a required model and a
+standalone API key; see [running locally](../README.md#run-locally) and [how
+summaries are built](../README.md#how-summaries-are-built). A failed attempt is
+retried by Docket up to three times. If all three fail, the claim lapses and the
+job is claimed again. Pending snapshots never receive a partial view. On
+shutdown the worker lets running summaries finish for ten seconds, then cancels
+them.
 
 ## Input and capacity limits
 
@@ -159,13 +162,14 @@ budget the rendered view plus instructions, active tool work, and output room.
 ## Backend boundary
 
 `Storage` exposes ingestion, snapshot preparation/read, zoom, claim, renewal,
-delayed release, and completion. HTTP handlers depend only on that contract.
-Renewal and release are in-process operations used by the worker. The memory backend
+and completion. HTTP handlers depend only on that contract. Renewal is an
+in-process operation used by the worker. The memory backend
 serializes state changes with a process-local mutex, prepares fallible view
 changes before commit, retains the live and compaction views, and freezes waiting snapshots as
 their exact cutoffs become covered. Ready snapshots are never rebuilt.
-Short-record ingestion and worker completion use the same prepared publication
-and commit operation; the worker's completion token is stored with its summary.
+Ingestion and completion share one prepared publication, which also joins any
+parents that now fit verbatim; the worker's completion token is stored with its
+summary.
 Internal failures retain their typed cause and operation for server diagnostics,
 while HTTP 500 responses expose only `{"error":"internal"}`.
 

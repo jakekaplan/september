@@ -14,12 +14,12 @@
 //! summaries, persist state, or hold original messages.
 //!
 //! ```
-//! use std::collections::BTreeMap;
 //! use september_memory::{Budget, Node, Summary, View, Zoom};
 //!
 //! let leaf = Node::new(0, 1)?;
 //! let mut view = View::new(Budget::CHAT);
-//! view.append(Summary::new(leaf, "user: remember the decision"), &BTreeMap::new())?;
+//! // No parent is built yet, so the view cannot merge.
+//! view.append(Summary::new(leaf, "user: remember the decision"), |_| None)?;
 //! let snapshot = view.freeze(1)?;
 //! assert_eq!(snapshot.zoom(leaf)?, Zoom::Message(0));
 //! # Ok::<(), september_memory::Error>(())
